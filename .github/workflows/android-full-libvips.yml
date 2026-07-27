@@ -142,7 +142,7 @@ jobs:
             -o "libvips/*:with_exif=True" \
             -o "libvips/*:with_lcms=True" \
             -o "libvips/*:with_heif=True" \
-            -o "libvips/*:with_jpeg_xl=True" \
+            -o "libvips/*:with_jpeg_xl=False" \
             -o "libvips/*:with_openjpeg=True" \
             -o "libvips/*:with_imagequant=True" \
             -o "libvips/*:with_highway=True" \
