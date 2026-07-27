@@ -156,14 +156,26 @@ jobs:
           OUT="$ROOT/stage/$ABI"
           mkdir -p "$OUT/lib" "$OUT/include"
 
-          # C++ binding sources (self-contained, vips-operators.cpp is pre-generated)
+          # VImage.cpp does `#include <config.h>`, a meson-generated file absent
+          # from the source tarball. The binding layer only needs it to exist;
+          # provide an empty one on the include path (matches what sharp-libvips
+          # does when preprocessing these sources).
+          SHIM="$ROOT/vips-shim"
+          mkdir -p "$SHIM"
+          : > "$SHIM/config.h"
+
+          # C++ binding sources. NB: vips-operators.cpp is NOT a standalone TU; it is
+          # #included inside the VImage class body via VImage8.h, so it must be
+          # excluded from the compile list (compiling it directly fails with
+          # "unknown type name 'VImage'"). The 5 V*.cpp pull it in through the header.
           SRC="$CPP_SRC/VConnection.cpp $CPP_SRC/VError.cpp $CPP_SRC/VImage.cpp \
-               $CPP_SRC/VInterpolate.cpp $CPP_SRC/VRegion.cpp $CPP_SRC/vips-operators.cpp"
+               $CPP_SRC/VInterpolate.cpp $CPP_SRC/VRegion.cpp"
 
           "$CXX" --sysroot="$SYSROOT" -std=c++17 -fexceptions -frtti -fPIC -O2 \
             -shared -o "$OUT/lib/libvips-cpp.so.42" \
             -Wl,-soname,libvips-cpp.so.42 \
             -DG_DISABLE_ASSERT -DG_DISABLE_CAST_CHECKS -DG_DISABLE_CHECKS \
+            -I"$SHIM" \
             -I"$CPP_SRC/include" \
             -I"$C_INC" \
             -I"$C_INC/glib-2.0" \
