@@ -1,24 +1,29 @@
 name: sharp Android Full libvips Build
 
-# Builds a FULL-format libvips for Android from source via Conan Center, then
-# cross-compiles sharp against it. Unlike the CaiJingLong prebuilt (JPEG/PNG/
-# WebP/GIF only, "web" build, libvips 8.16.0), this enables the full raster
-# format set: TIFF, HEIF/AVIF, JPEG-XL, JPEG2000, plus EXIF/LCMS/imagequant.
+# Builds a fuller-format libvips for Android FROM SOURCE via MobiPkg/Compile,
+# then cross-compiles sharp against it.
 #
-# The vector stack (PDF/poppler, SVG/rsvg, pangocairo, pdfium, magick,
-# openslide) is intentionally OFF: those pull cairo/pango/poppler which are
-# extremely painful to cross-compile for Android and would destabilise the
-# whole build. This covers essentially all raster image processing.
+# Why MobiPkg instead of Conan Center:
+#   The hard part of an Android libvips is cross-compiling glib (Conan's glib
+#   recipe is not Android-ready: missing iconv wiring + Bionic pthread_*_np
+#   gaps). MobiPkg/Compile already solves glib-on-Android and is exactly what
+#   the CaiJingLong prebuilt used. Its default config is a "web" build though
+#   (JPEG/PNG/WebP only, and -Dcplusplus=false, so NO libvips-cpp that sharp
+#   needs). We patch its config to:
+#     * enable -Dcplusplus=true   -> produces libvips-cpp (removes the need to
+#       hand-compile the C++ binding ourselves)
+#     * enable extra raster formats (phase 1: TIFF; more via IV_FORMATS)
+#
+# Constraint: MobiPkg's own android.sh documents that x86/x86_64 break due to
+# libffi assembly vs the NDK, so this path is ARM-only (arm64-v8a, armeabi-v7a).
+# If you need x86_64, keep using the web-only prebuilt workflow.
 #
 # Pipeline per ABI:
-#   1. Conan installs libvips (shared) + full deps for the Android target,
-#      building everything from source with the NDK toolchain.
-#   2. Conan `deploy` collects all .so + headers + pkgconfig into a staging dir.
-#   3. sharp's N-API layer is cross-compiled against that staging libvips,
-#      linked also to the Javet Node runtime .so for napi_* symbols.
-#   4. jniLibs/<abi>/ bundles sharp.node + libvips + every dependency .so.
-#
-# Start with arm64-v8a to validate; extend the matrix once green.
+#   1. MobiPkg builds glib + libvips (+cpp) + format deps for the Android target.
+#   2. sharp's N-API layer is cross-compiled against that libvips via pkg-config
+#      (SHARP_FORCE_GLOBAL_LIBVIPS=1), also linked to the Javet Node runtime .so
+#      for napi_* symbols (resolved at link time with --no-undefined).
+#   3. jniLibs/<abi>/ bundles sharp.node + libvips + every dependency .so.
 
 on:
   workflow_dispatch:
@@ -31,6 +36,10 @@ on:
         description: 'Node.js version (headers)'
         required: false
         default: '24.18.0'
+      formats:
+        description: 'Comma list of extra libvips formats (tiff,heif,openjpeg,lcms,exif)'
+        required: false
+        default: 'tiff'
   push:
     tags: ['full-*']
 
@@ -40,9 +49,10 @@ permissions:
 env:
   SHARP_REF: ${{ github.event.inputs.sharp_ref || 'v0.33.5' }}
   NODE_VERSION: ${{ github.event.inputs.node_version || '24.18.0' }}
-  NDK_VERSION: r27d
+  IV_FORMATS: ${{ github.event.inputs.formats || 'tiff' }}
+  NDK_VERSION: r25c
   ANDROID_API: '24'
-  LIBVIPS_VERSION: '8.16.0'
+  MOBIPKG_REPO: https://github.com/MobiPkg/Compile.git
   JAVET_SO: libjavet-node-android-i18n.v.5.0.10.so
   JAVET_SO_ZIP_URL: https://raw.githubusercontent.com/anonyein/isolated-vm/main/libjavet-node-android-i18n.v.5.0.10.zip
 
@@ -58,7 +68,7 @@ jobs:
             triple: aarch64-linux-android
             gyp_arch: arm64
     steps:
-      - name: Checkout workflow repo (profile + patch script)
+      - name: Checkout workflow repo (patch script)
         uses: actions/checkout@v4
         with:
           path: wf
@@ -80,15 +90,20 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Setup Dart (for MobiPkg/Compile)
+        uses: dart-lang/setup-dart@v1
+        with:
+          sdk: 2.19.6
+
       - name: Install build tools
         run: |
           set -eux
           sudo apt-get update -y
-          sudo apt-get install -y pkg-config xz-utils ninja-build
-          python3 -m pip install "conan>=2.4,<3"
+          sudo apt-get install -y pkg-config xz-utils ninja-build cmake automake autoconf libtool
+          python3 -m pip install meson pyyaml
           npm install --global node-gyp@latest
 
-      - name: Setup Android NDK
+      - name: Setup Android NDK ${{ env.NDK_VERSION }}
         id: ndk
         uses: nttld/setup-ndk@v1
         with:
@@ -98,107 +113,95 @@ jobs:
       - name: Fetch Node.js headers
         run: node-gyp install ${{ env.NODE_VERSION }}
 
-      - name: Render Conan Android profile
-        id: profile
+      - name: Clone MobiPkg/Compile
+        run: |
+          set -eux
+          git clone --depth=1 "${{ env.MOBIPKG_REPO }}" mobipkg
+          cd mobipkg
+          dart pub get
+
+      - name: Patch MobiPkg libvips config (cplusplus + formats)
+        env:
+          IV_FORMATS: ${{ env.IV_FORMATS }}
+        run: |
+          set -eux
+          python3 wf/.github/workflows/_patch-mobipkg-libvips.py \
+            "$PWD/mobipkg/example/libvips"
+          echo "--- workspace.yaml ---"
+          cat mobipkg/example/libvips/workspace.yaml
+          echo "--- libvips/lib.yaml options ---"
+          grep -E '^\s*-\s*-D' mobipkg/example/libvips/libvips/lib.yaml
+
+      - name: Build libvips (+cpp +formats) for ${{ matrix.abi }}
+        id: vips
         env:
           ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
-          ANDROID_ABI: ${{ matrix.abi }}
-          ANDROID_API: ${{ env.ANDROID_API }}
         run: |
           set -eux
-          conan profile detect --force
-          mkdir -p "$HOME/.conan2/profiles"
-          # Conan 2 renders jinja only when the profile filename ends in .jinja.
-          cp wf/.github/conan/android.jinja "$HOME/.conan2/profiles/android.jinja"
-          conan profile show -pr:h "$HOME/.conan2/profiles/android.jinja"
+          cd mobipkg
+          INSTALL="$PWD/example/libvips/install"
+          mkdir -p "$INSTALL"
+          # ARM-only per MobiPkg's android.sh (x86 breaks on libffi asm).
+          dart run bin/compile.dart workspace \
+            -C example/libvips \
+            --no-ios --android \
+            --android-cpu ${{ matrix.abi }} \
+            --install-prefix "$INSTALL" \
+            --dependency-prefix "$INSTALL" \
+            --target libvips
+          echo "install=$INSTALL" >> "$GITHUB_OUTPUT"
+          echo "--- built tree (android) ---"
+          find "$INSTALL" -maxdepth 3 -type d | sort | head -60
 
-      - name: Conan install full libvips (from source, Android)
-        id: conan
-        env:
-          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
-          ANDROID_ABI: ${{ matrix.abi }}
-          ANDROID_API: ${{ env.ANDROID_API }}
+      - name: Locate libvips staging for ${{ matrix.abi }}
+        id: stage
         run: |
           set -eux
-          STAGE="$PWD/stage/${{ matrix.abi }}"
-          mkdir -p "$PWD/conanrun"
-          cd "$PWD/conanrun"
-
-          # Full raster format set. Vector stack (poppler/rsvg/pango/pdfium/
-          # magick/openslide) deliberately disabled for Android buildability.
-          conan install \
-            --requires="libvips/${LIBVIPS_VERSION}" \
-            -pr:h="$HOME/.conan2/profiles/android.jinja" \
-            -pr:b=default \
-            --build=missing \
-            -o "libvips/*:shared=True" \
-            -o "libvips/*:cpp=True" \
-            -o "libvips/*:deprecated=True" \
-            -o "libvips/*:with_jpeg=libjpeg-turbo" \
-            -o "libtiff/*:jpeg=libjpeg-turbo" \
-            -o "libvips/*:with_png=libpng" \
-            -o "libvips/*:with_webp=True" \
-            -o "libvips/*:with_tiff=True" \
-            -o "libvips/*:with_cgif=False" \
-            -o "libvips/*:with_exif=True" \
-            -o "libvips/*:with_lcms=True" \
-            -o "libvips/*:with_heif=True" \
-            -o "libvips/*:with_jpeg_xl=False" \
-            -o "libvips/*:with_openjpeg=True" \
-            -o "libvips/*:with_imagequant=False" \
-            -o "libvips/*:with_highway=True" \
-            -o "libvips/*:with_fftw=False" \
-            -o "libvips/*:with_nsgif=True" \
-            -o "libvips/*:with_ppm=True" \
-            -o "libvips/*:with_analyse=True" \
-            -o "libvips/*:with_radiance=True" \
-            -o "*:shared=True" \
-            --deployer=full_deploy \
-            --deployer-folder="$STAGE"
-          echo "stage=$STAGE" >> "$GITHUB_OUTPUT"
-
-      - name: Flatten deploy into lib/ + include/ + pkgconfig
-        id: flatten
-        run: |
-          set -eux
-          STAGE="$PWD/stage/${{ matrix.abi }}"
-          ROOT="$PWD/vips/${{ matrix.abi }}"
-          mkdir -p "$ROOT/lib/pkgconfig" "$ROOT/include"
-          # full_deploy layout: full_deploy/host/<pkg>/<ver>/<build_type>/<arch>/{lib,include,...}
-          find "$STAGE" -type f \( -name '*.so' -o -name '*.so.*' \) -exec cp -av {} "$ROOT/lib/" \; 2>/dev/null || true
-          # headers
-          for inc in $(find "$STAGE" -type d -name include); do
-            cp -a "$inc/." "$ROOT/include/" 2>/dev/null || true
-          done
-          # pkgconfig files (rewrite prefixes to $ROOT)
-          for pc in $(find "$STAGE" -type f -name '*.pc'); do
-            cp -a "$pc" "$ROOT/lib/pkgconfig/" 2>/dev/null || true
-          done
-          # Rewrite pkg-config prefix/libdir/includedir to the flattened root.
-          python3 - "$ROOT" <<'PYEOF'
-          import os, re, sys, glob
-          root = sys.argv[1]
-          pcdir = os.path.join(root, "lib", "pkgconfig")
-          for pc in glob.glob(os.path.join(pcdir, "*.pc")):
-              with open(pc) as f:
-                  lines = f.read().splitlines()
-              out = []
-              for ln in lines:
-                  if ln.startswith("prefix="):
-                      out.append(f"prefix={root}")
-                  elif ln.startswith("libdir="):
-                      out.append("libdir=${prefix}/lib")
-                  elif ln.startswith("includedir="):
-                      out.append("includedir=${prefix}/include")
-                  else:
-                      out.append(ln)
-              with open(pc, "w") as f:
-                  f.write("\n".join(out) + "\n")
-          PYEOF
+          INSTALL="${{ steps.vips.outputs.install }}"
+          # MobiPkg installs per-arch; find the dir that actually holds libvips.so
+          libvips_so="$(find "$INSTALL" -type f -name 'libvips.so' | head -n1)"
+          test -n "$libvips_so"
+          LIBDIR="$(dirname "$libvips_so")"
+          ROOT="$(dirname "$LIBDIR")"
           echo "root=$ROOT" >> "$GITHUB_OUTPUT"
-          ls -lh "$ROOT/lib" | head -50
-          echo "--- vips-cpp.pc ---"
-          cat "$ROOT/lib/pkgconfig/vips-cpp.pc" 2>/dev/null || echo "no vips-cpp.pc"
+          echo "libdir=$LIBDIR" >> "$GITHUB_OUTPUT"
+          echo "--- libvips.so found at: $libvips_so ---"
+          echo "--- .so in libdir ---"
+          ls -lh "$LIBDIR"/*.so* 2>/dev/null || true
+          echo "--- libvips-cpp present? ---"
+          find "$ROOT" -name 'libvips-cpp.so*' -o -name 'libvips-cpp*.so' | head || true
+          echo "--- pkgconfig ---"
+          find "$ROOT" -name '*.pc' | head -30
+
+      - name: Ensure pkg-config can resolve vips-cpp
+        id: pc
+        run: |
+          set -eux
+          ROOT="${{ steps.stage.outputs.root }}"
+          LIBDIR="${{ steps.stage.outputs.libdir }}"
+          PCDIR="$(find "$ROOT" -type d -name pkgconfig | head -n1)"
+          if [ -z "$PCDIR" ]; then
+            PCDIR="$LIBDIR/pkgconfig"
+            mkdir -p "$PCDIR"
+          fi
+          # If vips-cpp.pc is missing (older builds), synthesize minimal ones.
+          if [ ! -f "$PCDIR/vips-cpp.pc" ]; then
+            INC="$(find "$ROOT" -type d -name vips | head -n1)"
+            INC_ROOT="$(dirname "$INC")"
+            {
+              echo "prefix=$ROOT"
+              echo "libdir=$LIBDIR"
+              echo "includedir=$INC_ROOT"
+              echo "Name: vips-cpp"
+              echo "Description: libvips C++ binding"
+              echo "Version: 8.16.0"
+              echo "Libs: -L$LIBDIR -lvips-cpp -lvips"
+              echo "Cflags: -I$INC_ROOT"
+            } > "$PCDIR/vips-cpp.pc"
+          fi
+          echo "pcdir=$PCDIR" >> "$GITHUB_OUTPUT"
+          PKG_CONFIG_PATH="$PCDIR" pkg-config --modversion vips-cpp || true
+          PKG_CONFIG_PATH="$PCDIR" pkg-config --libs vips-cpp || true
 
       - name: Download & extract Javet runtime .so
         run: |
@@ -236,11 +239,9 @@ jobs:
           export CXXFLAGS="--sysroot=$SYSROOT -fPIC"
           export LDFLAGS="--sysroot=$SYSROOT"
 
-          ROOT="$PWD/vips/${{ matrix.abi }}"
-          export PKG_CONFIG_PATH="$ROOT/lib/pkgconfig"
+          export PKG_CONFIG_PATH="${{ steps.pc.outputs.pcdir }}"
           export IV_JAVET_LIB="$PWD/javet/libs/${{ matrix.abi }}/${{ env.JAVET_SO }}"
 
-          # Confirm pkg-config can see the full libvips before building.
           pkg-config --modversion vips-cpp
           pkg-config --libs vips-cpp
 
@@ -257,13 +258,14 @@ jobs:
       - name: Collect into jniLibs
         run: |
           set -eux
-          ROOT="$PWD/vips/${{ matrix.abi }}"
+          LIBDIR="${{ steps.stage.outputs.libdir }}"
           DEST="$PWD/jniLibs/${{ matrix.abi }}"
           mkdir -p "$DEST"
           node_file="$(find sharp/src/build -name 'sharp*.node' | head -n1)"
           test -n "$node_file"
           cp -v "$node_file" "$DEST/sharp.node"
-          cp -av "$ROOT/lib/"*.so* "$DEST/" 2>/dev/null || true
+          # libvips + libvips-cpp + all dependency .so travel next to the addon
+          cp -av "$LIBDIR/"*.so* "$DEST/" 2>/dev/null || true
           rm -rf "$DEST/pkgconfig"
           file "$DEST/sharp.node"
           echo "--- bundled .so ---"
