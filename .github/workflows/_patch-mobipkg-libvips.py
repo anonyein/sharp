@@ -118,6 +118,49 @@ DEP_FLAG_PATCHES = {
     "libheif": {"c": "-Qunused-arguments", "cxx": "-Qunused-arguments"},
 }
 
+# Some MobiPkg dep recipes have the wrong build type. libexif v0.6.24 ships only
+# autotools (configure.ac / Makefile.am, no CMakeLists.txt), yet its recipe says
+# `type: cmake`, so cmake aborts with "does not appear to contain CMakeLists.txt".
+# Rewrite the whole recipe body for such deps to a correct autotools build.
+DEP_RECIPE_OVERRIDES = {
+    "libexif": {
+        "name": "libexif",
+        "type": "autotools",
+        "source": {
+            "git": {
+                "url": "https://github.com/libexif/libexif.git",
+                "ref": "v0.6.24",
+            }
+        },
+        "license": "COPYING",
+        "flags": {
+            "c": "-fPIC -O2",
+            "cxx": "-fPIC -O2",
+            "cpp": "",
+            "ld": "",
+        },
+        # git checkout has no ./configure yet; regenerate the autotools scripts.
+        "precompile": ["autoreconf -fiv"],
+        "options": [
+            "--enable-static",
+            "--disable-shared",
+            "--disable-docs",
+            "--disable-nls",
+        ],
+    },
+}
+
+
+def override_dep_recipe(dep_path, recipe):
+    """Overwrite a dep's lib.yaml wholesale (idempotent by content)."""
+    p = os.path.join(BASE, dep_path, "lib.yaml")
+    if not os.path.isfile(p):
+        print(f"WARN: dep lib.yaml missing, cannot override recipe: {p}")
+        return
+    with open(p, "w", encoding="utf-8") as f:
+        yaml.safe_dump(recipe, f, sort_keys=False, allow_unicode=True)
+    print(f"{dep_path}/lib.yaml: recipe overridden (type={recipe.get('type')})")
+
 
 def patch_dep_flags(dep_path, extra):
     """Append extra c/cxx flags to a dep's lib.yaml (idempotent)."""
@@ -144,6 +187,11 @@ _dep_paths = {name: path for fmt in formats if FORMAT_MAP.get(fmt)
 for name, extra in DEP_FLAG_PATCHES.items():
     if name in _dep_paths:
         patch_dep_flags(_dep_paths[name], extra)
+
+# Apply full recipe overrides for deps with a wrong build type.
+for name, recipe in DEP_RECIPE_OVERRIDES.items():
+    if name in _dep_paths:
+        override_dep_recipe(_dep_paths[name], recipe)
 
 # ---- 2) libvips/lib.yaml : enable cplusplus + formats + deps ---------------
 with open(LIBVIPS, encoding="utf-8") as f:
