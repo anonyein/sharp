@@ -1,0 +1,50 @@
+{# Conan 2 profile for cross-compiling to Android with the NDK.
+   Rendered per-ABI via env vars set in the workflow:
+     ANDROID_NDK_HOME  absolute NDK path
+     ANDROID_ABI       arm64-v8a | x86_64 | armeabi-v7a | x86
+     ANDROID_API       e.g. 24
+   The NDK host tag is linux-x86_64 on GitHub's ubuntu runners. #}
+{% set ndk = os.getenv("ANDROID_NDK_HOME") %}
+{% set abi = os.getenv("ANDROID_ABI") %}
+{% set api = os.getenv("ANDROID_API", "24") %}
+{% set host_tag = "linux-x86_64" %}
+{% set toolchain = ndk + "/toolchains/llvm/prebuilt/" + host_tag %}
+{% set bins = toolchain + "/bin" %}
+{% set triple = {
+     "arm64-v8a": "aarch64-linux-android",
+     "x86_64": "x86_64-linux-android",
+     "armeabi-v7a": "armv7a-linux-androideabi",
+     "x86": "i686-linux-android"
+   }[abi] %}
+{% set conan_arch = {
+     "arm64-v8a": "armv8",
+     "x86_64": "x86_64",
+     "armeabi-v7a": "armv7",
+     "x86": "x86"
+   }[abi] %}
+{% set cc = bins + "/" + triple + api + "-clang" %}
+{% set cxx = bins + "/" + triple + api + "-clang++" %}
+
+[settings]
+os=Android
+os.api_level={{ api }}
+arch={{ conan_arch }}
+compiler=clang
+compiler.version=18
+compiler.libcxx=c++_shared
+compiler.cppstd=17
+build_type=Release
+
+[conf]
+tools.android:ndk_path={{ ndk }}
+tools.build:compiler_executables={"c": "{{ cc }}", "cpp": "{{ cxx }}"}
+tools.cmake.cmaketoolchain:generator=Ninja
+
+[buildenv]
+PATH+=(path){{ bins }}
+CC={{ cc }}
+CXX={{ cxx }}
+AR={{ bins }}/llvm-ar
+RANLIB={{ bins }}/llvm-ranlib
+STRIP={{ bins }}/llvm-strip
+NM={{ bins }}/llvm-nm

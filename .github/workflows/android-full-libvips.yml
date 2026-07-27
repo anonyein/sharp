@@ -1,0 +1,308 @@
+name: sharp Android Full libvips Build
+
+# Builds a FULL-format libvips for Android from source via Conan Center, then
+# cross-compiles sharp against it. Unlike the CaiJingLong prebuilt (JPEG/PNG/
+# WebP/GIF only, "web" build, libvips 8.16.0), this enables the full raster
+# format set: TIFF, HEIF/AVIF, JPEG-XL, JPEG2000, plus EXIF/LCMS/imagequant.
+#
+# The vector stack (PDF/poppler, SVG/rsvg, pangocairo, pdfium, magick,
+# openslide) is intentionally OFF: those pull cairo/pango/poppler which are
+# extremely painful to cross-compile for Android and would destabilise the
+# whole build. This covers essentially all raster image processing.
+#
+# Pipeline per ABI:
+#   1. Conan installs libvips (shared) + full deps for the Android target,
+#      building everything from source with the NDK toolchain.
+#   2. Conan `deploy` collects all .so + headers + pkgconfig into a staging dir.
+#   3. sharp's N-API layer is cross-compiled against that staging libvips,
+#      linked also to the Javet Node runtime .so for napi_* symbols.
+#   4. jniLibs/<abi>/ bundles sharp.node + libvips + every dependency .so.
+#
+# Start with arm64-v8a to validate; extend the matrix once green.
+
+on:
+  workflow_dispatch:
+    inputs:
+      sharp_ref:
+        description: 'sharp git tag to build'
+        required: false
+        default: 'v0.33.5'
+      node_version:
+        description: 'Node.js version (headers)'
+        required: false
+        default: '24.18.0'
+  push:
+    tags: ['full-*']
+
+permissions:
+  contents: write
+
+env:
+  SHARP_REF: ${{ github.event.inputs.sharp_ref || 'v0.33.5' }}
+  NODE_VERSION: ${{ github.event.inputs.node_version || '24.18.0' }}
+  NDK_VERSION: r27d
+  ANDROID_API: '24'
+  LIBVIPS_VERSION: '8.16.0'
+  JAVET_SO: libjavet-node-android-i18n.v.5.0.10.so
+  JAVET_SO_ZIP_URL: https://raw.githubusercontent.com/anonyein/isolated-vm/main/libjavet-node-android-i18n.v.5.0.10.zip
+
+jobs:
+  full-build:
+    name: sharp full-libvips .node for ${{ matrix.abi }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - abi: arm64-v8a
+            triple: aarch64-linux-android
+            gyp_arch: arm64
+    steps:
+      - name: Checkout workflow repo (profile + patch script)
+        uses: actions/checkout@v4
+        with:
+          path: wf
+
+      - name: Checkout sharp ${{ env.SHARP_REF }}
+        uses: actions/checkout@v4
+        with:
+          repository: lovell/sharp
+          ref: ${{ env.SHARP_REF }}
+          path: sharp
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install build tools
+        run: |
+          set -eux
+          sudo apt-get update -y
+          sudo apt-get install -y pkg-config xz-utils ninja-build
+          python3 -m pip install "conan>=2.4,<3"
+          npm install --global node-gyp@latest
+
+      - name: Setup Android NDK
+        id: ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: ${{ env.NDK_VERSION }}
+          local-cache: false
+
+      - name: Fetch Node.js headers
+        run: node-gyp install ${{ env.NODE_VERSION }}
+
+      - name: Render Conan Android profile
+        id: profile
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+          ANDROID_ABI: ${{ matrix.abi }}
+          ANDROID_API: ${{ env.ANDROID_API }}
+        run: |
+          set -eux
+          conan profile detect --force
+          mkdir -p "$HOME/.conan2/profiles"
+          # Conan 2 renders jinja only when the profile filename ends in .jinja.
+          cp wf/.github/conan/android.jinja "$HOME/.conan2/profiles/android.jinja"
+          conan profile show -pr:h "$HOME/.conan2/profiles/android.jinja"
+
+      - name: Conan install full libvips (from source, Android)
+        id: conan
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+          ANDROID_ABI: ${{ matrix.abi }}
+          ANDROID_API: ${{ env.ANDROID_API }}
+        run: |
+          set -eux
+          STAGE="$PWD/stage/${{ matrix.abi }}"
+          mkdir -p "$PWD/conanrun"
+          cd "$PWD/conanrun"
+
+          # Full raster format set. Vector stack (poppler/rsvg/pango/pdfium/
+          # magick/openslide) deliberately disabled for Android buildability.
+          conan install \
+            --requires="libvips/${LIBVIPS_VERSION}" \
+            -pr:h="$HOME/.conan2/profiles/android.jinja" \
+            -pr:b=default \
+            --build=missing \
+            -o "libvips/*:shared=True" \
+            -o "libvips/*:cpp=True" \
+            -o "libvips/*:deprecated=True" \
+            -o "libvips/*:with_jpeg=libjpeg-turbo" \
+            -o "libvips/*:with_png=libpng" \
+            -o "libvips/*:with_webp=True" \
+            -o "libvips/*:with_tiff=True" \
+            -o "libvips/*:with_cgif=True" \
+            -o "libvips/*:with_exif=True" \
+            -o "libvips/*:with_lcms=True" \
+            -o "libvips/*:with_heif=True" \
+            -o "libvips/*:with_jpeg_xl=True" \
+            -o "libvips/*:with_openjpeg=True" \
+            -o "libvips/*:with_imagequant=True" \
+            -o "libvips/*:with_highway=True" \
+            -o "libvips/*:with_fftw=False" \
+            -o "libvips/*:with_nsgif=True" \
+            -o "libvips/*:with_ppm=True" \
+            -o "libvips/*:with_analyse=True" \
+            -o "libvips/*:with_radiance=True" \
+            -o "*:shared=True" \
+            --deployer=full_deploy \
+            --deployer-folder="$STAGE"
+          echo "stage=$STAGE" >> "$GITHUB_OUTPUT"
+
+      - name: Flatten deploy into lib/ + include/ + pkgconfig
+        id: flatten
+        run: |
+          set -eux
+          STAGE="$PWD/stage/${{ matrix.abi }}"
+          ROOT="$PWD/vips/${{ matrix.abi }}"
+          mkdir -p "$ROOT/lib/pkgconfig" "$ROOT/include"
+          # full_deploy layout: full_deploy/host/<pkg>/<ver>/<build_type>/<arch>/{lib,include,...}
+          find "$STAGE" -type f \( -name '*.so' -o -name '*.so.*' \) -exec cp -av {} "$ROOT/lib/" \; 2>/dev/null || true
+          # headers
+          for inc in $(find "$STAGE" -type d -name include); do
+            cp -a "$inc/." "$ROOT/include/" 2>/dev/null || true
+          done
+          # pkgconfig files (rewrite prefixes to $ROOT)
+          for pc in $(find "$STAGE" -type f -name '*.pc'); do
+            cp -a "$pc" "$ROOT/lib/pkgconfig/" 2>/dev/null || true
+          done
+          # Rewrite pkg-config prefix/libdir/includedir to the flattened root.
+          python3 - "$ROOT" <<'PYEOF'
+          import os, re, sys, glob
+          root = sys.argv[1]
+          pcdir = os.path.join(root, "lib", "pkgconfig")
+          for pc in glob.glob(os.path.join(pcdir, "*.pc")):
+              with open(pc) as f:
+                  lines = f.read().splitlines()
+              out = []
+              for ln in lines:
+                  if ln.startswith("prefix="):
+                      out.append(f"prefix={root}")
+                  elif ln.startswith("libdir="):
+                      out.append("libdir=${prefix}/lib")
+                  elif ln.startswith("includedir="):
+                      out.append("includedir=${prefix}/include")
+                  else:
+                      out.append(ln)
+              with open(pc, "w") as f:
+                  f.write("\n".join(out) + "\n")
+          PYEOF
+          echo "root=$ROOT" >> "$GITHUB_OUTPUT"
+          ls -lh "$ROOT/lib" | head -50
+          echo "--- vips-cpp.pc ---"
+          cat "$ROOT/lib/pkgconfig/vips-cpp.pc" 2>/dev/null || echo "no vips-cpp.pc"
+
+      - name: Download & extract Javet runtime .so
+        run: |
+          set -eux
+          curl -fL -o javet.zip "${{ env.JAVET_SO_ZIP_URL }}"
+          unzip -o javet.zip -d javet
+          test -f "javet/libs/${{ matrix.abi }}/${{ env.JAVET_SO }}"
+
+      - name: Patch sharp binding.gyp for Android
+        env:
+          IV_ABI: ${{ matrix.abi }}
+          IV_JAVET_SO: ${{ env.JAVET_SO }}
+        run: python3 wf/.github/workflows/_patch-sharp-android.py "$PWD/sharp/src/binding.gyp"
+
+      - name: Cross-compile & link sharp.node
+        env:
+          NDK: ${{ steps.ndk.outputs.ndk-path }}
+          TRIPLE: ${{ matrix.triple }}
+          ABI: ${{ matrix.abi }}
+          API: ${{ env.ANDROID_API }}
+          GYP_ARCH: ${{ matrix.gyp_arch }}
+          SHARP_FORCE_GLOBAL_LIBVIPS: '1'
+        run: |
+          set -eux
+          HOST_TAG=linux-x86_64
+          TOOL="$NDK/toolchains/llvm/prebuilt/$HOST_TAG/bin"
+          SYSROOT="$NDK/toolchains/llvm/prebuilt/$HOST_TAG/sysroot"
+          export CC="$TOOL/${TRIPLE}${API}-clang"
+          export CXX="$TOOL/${TRIPLE}${API}-clang++"
+          export AR="$TOOL/llvm-ar"
+          export RANLIB="$TOOL/llvm-ranlib"
+          export STRIP="$TOOL/llvm-strip"
+          export LINK="$CXX"
+          export CFLAGS="--sysroot=$SYSROOT -fPIC"
+          export CXXFLAGS="--sysroot=$SYSROOT -fPIC"
+          export LDFLAGS="--sysroot=$SYSROOT"
+
+          ROOT="$PWD/vips/${{ matrix.abi }}"
+          export PKG_CONFIG_PATH="$ROOT/lib/pkgconfig"
+          export IV_JAVET_LIB="$PWD/javet/libs/${{ matrix.abi }}/${{ env.JAVET_SO }}"
+
+          # Confirm pkg-config can see the full libvips before building.
+          pkg-config --modversion vips-cpp
+          pkg-config --libs vips-cpp
+
+          cd sharp
+          npm install --ignore-scripts --no-audit --no-fund
+          node-gyp configure --directory=src \
+            --nodedir="$HOME/.cache/node-gyp/${NODE_VERSION}" \
+            --arch="$GYP_ARCH"
+          node-gyp build --directory=src --release \
+            CC.target="$CC" CXX.target="$CXX" \
+            CC.host="$CC" CXX.host="$CXX" \
+            LINK.target="$CXX" AR.target="$AR"
+
+      - name: Collect into jniLibs
+        run: |
+          set -eux
+          ROOT="$PWD/vips/${{ matrix.abi }}"
+          DEST="$PWD/jniLibs/${{ matrix.abi }}"
+          mkdir -p "$DEST"
+          node_file="$(find sharp/src/build -name 'sharp*.node' | head -n1)"
+          test -n "$node_file"
+          cp -v "$node_file" "$DEST/sharp.node"
+          cp -av "$ROOT/lib/"*.so* "$DEST/" 2>/dev/null || true
+          rm -rf "$DEST/pkgconfig"
+          file "$DEST/sharp.node"
+          echo "--- bundled .so ---"
+          ls -lh "$DEST"
+
+      - name: Upload per-abi artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sharp-android-full-${{ matrix.abi }}
+          path: jniLibs/${{ matrix.abi }}
+
+  pack:
+    name: Bundle jniLibs
+    needs: full-build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download per-abi artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: sharp-android-full-*
+          path: incoming
+      - name: Assemble jniLibs
+        run: |
+          set -eux
+          mkdir -p jniLibs
+          for d in incoming/sharp-android-full-*; do
+            abi="${d##*sharp-android-full-}"
+            mkdir -p "jniLibs/$abi"
+            cp -av "$d/." "jniLibs/$abi/"
+          done
+          find jniLibs -type f | sort
+      - name: Zip
+        run: zip -r "sharp-android-full-jniLibs-${{ env.SHARP_REF }}.zip" jniLibs
+      - name: Upload merged artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sharp-android-full-jniLibs
+          path: sharp-android-full-jniLibs-${{ env.SHARP_REF }}.zip
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: sharp-android-full-jniLibs-*.zip
