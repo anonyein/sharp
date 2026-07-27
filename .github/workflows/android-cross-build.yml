@@ -1,0 +1,332 @@
+name: sharp Android Cross Build
+
+# Cross-compiles sharp (Node-API / node-addon-api addon) into an Android .node
+# for arm64-v8a / x86_64 (+ optional armeabi-v7a / x86), backed by a prebuilt
+# Android libvips.
+#
+# Why this is more involved than better-sqlite3 / isolated-vm:
+#   sharp is a C++ consumer of libvips' C++ API (VImage, VConnection, ...). The
+#   only freely available Android libvips builds (CaiJingLong/libvips_precompile_
+#   mobile) ship the C library + C headers only (for Dart/Flutter FFI), NOT the
+#   C++ binding (libvips-cpp.so) nor the vips/vips8 C++ headers. So this workflow:
+#     1. downloads the prebuilt Android libvips (C lib + C headers, per ABI)
+#     2. downloads the matching libvips *source* tarball for the C++ binding
+#        sources (cplusplus/*.cpp) and C++ headers (cplusplus/include/vips)
+#     3. cross-compiles libvips-cpp.so.42 with the NDK, linking the C libvips.so
+#     4. synthesizes pkg-config (.pc) files so sharp's use_global_libvips path
+#        (SHARP_FORCE_GLOBAL_LIBVIPS=1) discovers include + link flags
+#     5. cross-compiles sharp's N-API layer, linking libvips-cpp + the Javet Node
+#        runtime .so (for napi_* symbols, resolved at link time via --no-undefined)
+#     6. bundles jniLibs/<abi>/ with sharp.node + libvips + all glib .so deps
+#
+# Version pinning: the prebuilt Android libvips is actually 8.16.0, so we build
+# sharp 0.33.5 (requires libvips >= 8.15.3) to keep the libvips C/C++ ABI matched
+# and avoid undefined symbols from newer libvips APIs.
+
+on:
+  push:
+    tags: ['*']
+  workflow_dispatch:
+    inputs:
+      sharp_ref:
+        description: 'sharp git tag to build'
+        required: false
+        default: 'v0.33.5'
+      node_version:
+        description: 'Node.js version (headers) for the Android build'
+        required: false
+        default: '24.18.0'
+
+permissions:
+  contents: write
+
+env:
+  SHARP_REF: ${{ github.event.inputs.sharp_ref || 'v0.33.5' }}
+  NODE_VERSION: ${{ github.event.inputs.node_version || '24.18.0' }}
+  NDK_VERSION: r27d
+  ANDROID_API: '24'
+  LIBVIPS_SOURCE_VERSION: '8.16.0'
+  # Prebuilt Android libvips (C library + C headers), CaiJingLong/libvips_precompile_mobile
+  LIBVIPS_ANDROID_URL: https://github.com/CaiJingLong/libvips_precompile_mobile/releases/download/android-mobipkg-2025-12-12-11/libvips-android-mobipkg-android-mobipkg-2025-12-12-11.tar.xz
+  # Javet Node runtime .so bundle (libs/<abi>/<so> layout inside), from isolated-vm repo
+  JAVET_SO: libjavet-node-android-i18n.v.5.0.10.so
+  JAVET_SO_ZIP_URL: https://raw.githubusercontent.com/anonyein/isolated-vm/main/libjavet-node-android-i18n.v.5.0.10.zip
+
+jobs:
+  cross-build:
+    name: sharp .node for ${{ matrix.abi }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - abi: arm64-v8a
+            triple: aarch64-linux-android
+            gyp_arch: arm64
+          - abi: x86_64
+            triple: x86_64-linux-android
+            gyp_arch: x64
+    steps:
+      - name: Checkout workflow repo (for patch script)
+        uses: actions/checkout@v4
+        with:
+          path: wf
+
+      - name: Checkout sharp ${{ env.SHARP_REF }}
+        uses: actions/checkout@v4
+        with:
+          repository: lovell/sharp
+          ref: ${{ env.SHARP_REF }}
+          path: sharp
+
+      - name: Setup Node.js (host, drives node-gyp)
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install build tools
+        run: |
+          set -eux
+          sudo apt-get update -y
+          sudo apt-get install -y pkg-config xz-utils
+          npm install --global node-gyp@latest
+
+      - name: Setup Android NDK
+        id: ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: ${{ env.NDK_VERSION }}
+          local-cache: false
+
+      - name: Fetch Node.js headers (${{ env.NODE_VERSION }})
+        run: node-gyp install ${{ env.NODE_VERSION }}
+
+      - name: Download prebuilt Android libvips (C lib + headers)
+        run: |
+          set -eux
+          mkdir -p vips
+          curl -fL -o vips.tar.xz "${{ env.LIBVIPS_ANDROID_URL }}"
+          tar -xf vips.tar.xz -C vips
+          # Sanity: C library + C headers present for this ABI
+          test -f "vips/jniLibs/${{ matrix.abi }}/libvips.so"
+          test -f "vips/include/vips/vips.h"
+          ls -lh "vips/jniLibs/${{ matrix.abi }}"
+
+      - name: Download libvips ${{ env.LIBVIPS_SOURCE_VERSION }} source (C++ binding)
+        run: |
+          set -eux
+          curl -fL -o vips-src.tar.xz \
+            "https://github.com/libvips/libvips/releases/download/v${{ env.LIBVIPS_SOURCE_VERSION }}/vips-${{ env.LIBVIPS_SOURCE_VERSION }}.tar.xz"
+          mkdir -p vips-src
+          tar -xf vips-src.tar.xz -C vips-src --strip-components=1
+          # C++ binding sources + headers must exist
+          test -f vips-src/cplusplus/VImage.cpp
+          test -f vips-src/cplusplus/vips-operators.cpp
+          test -f vips-src/cplusplus/include/vips/VImage8.h
+
+      - name: Download & extract Javet runtime .so
+        run: |
+          set -eux
+          curl -fL -o javet.zip "${{ env.JAVET_SO_ZIP_URL }}"
+          unzip -o javet.zip -d javet
+          test -f "javet/libs/${{ matrix.abi }}/${{ env.JAVET_SO }}"
+
+      - name: Cross-compile libvips-cpp.so.42
+        env:
+          NDK: ${{ steps.ndk.outputs.ndk-path }}
+          TRIPLE: ${{ matrix.triple }}
+          ABI: ${{ matrix.abi }}
+          API: ${{ env.ANDROID_API }}
+        run: |
+          set -eux
+          HOST_TAG=linux-x86_64
+          TOOL="$NDK/toolchains/llvm/prebuilt/$HOST_TAG/bin"
+          SYSROOT="$NDK/toolchains/llvm/prebuilt/$HOST_TAG/sysroot"
+          CXX="$TOOL/${TRIPLE}${API}-clang++"
+
+          ROOT="$PWD"
+          VIPS_LIB="$ROOT/vips/jniLibs/$ABI"
+          C_INC="$ROOT/vips/include"
+          CPP_SRC="$ROOT/vips-src/cplusplus"
+          OUT="$ROOT/stage/$ABI"
+          mkdir -p "$OUT/lib" "$OUT/include"
+
+          # C++ binding sources (self-contained, vips-operators.cpp is pre-generated)
+          SRC="$CPP_SRC/VConnection.cpp $CPP_SRC/VError.cpp $CPP_SRC/VImage.cpp \
+               $CPP_SRC/VInterpolate.cpp $CPP_SRC/VRegion.cpp $CPP_SRC/vips-operators.cpp"
+
+          "$CXX" --sysroot="$SYSROOT" -std=c++17 -fexceptions -frtti -fPIC -O2 \
+            -shared -o "$OUT/lib/libvips-cpp.so.42" \
+            -Wl,-soname,libvips-cpp.so.42 \
+            -DG_DISABLE_ASSERT -DG_DISABLE_CAST_CHECKS -DG_DISABLE_CHECKS \
+            -I"$CPP_SRC/include" \
+            -I"$C_INC" \
+            -I"$C_INC/glib-2.0" \
+            -I"$C_INC/vips" \
+            $SRC \
+            -L"$VIPS_LIB" \
+            -lvips -lglib-2.0 -lgobject-2.0 -lgio-2.0 \
+            -Wl,--no-undefined
+
+          ln -sf libvips-cpp.so.42 "$OUT/lib/libvips-cpp.so"
+          # Copy the C libvips + glib deps alongside so the addon can load them
+          cp -av "$VIPS_LIB"/*.so "$OUT/lib/"
+          # Headers: C headers + C++ binding headers merged
+          cp -a "$C_INC/." "$OUT/include/"
+          cp -a "$CPP_SRC/include/." "$OUT/include/"
+          ls -lh "$OUT/lib"
+
+      - name: Synthesize pkg-config files
+        env:
+          ABI: ${{ matrix.abi }}
+        run: |
+          set -eux
+          OUT="$PWD/stage/$ABI"
+          PC="$OUT/lib/pkgconfig"
+          mkdir -p "$PC"
+          VER="${{ env.LIBVIPS_SOURCE_VERSION }}"
+
+          # Write .pc files with absolute paths (no ${prefix} indirection, to
+          # avoid GitHub Actions treating ${{...}} as an expression).
+          LIB="$OUT/lib"
+          INC="$OUT/include"
+          {
+            echo "Name: GLib"
+            echo "Description: GLib"
+            echo "Version: 2.80.0"
+            echo "Libs: -L$LIB -lglib-2.0 -lgobject-2.0 -lgio-2.0 -lgmodule-2.0"
+            echo "Cflags: -I$INC/glib-2.0"
+          } > "$PC/glib-2.0.pc"
+          {
+            echo "Name: vips"
+            echo "Description: Image processing library"
+            echo "Version: $VER"
+            echo "Requires: glib-2.0"
+            echo "Libs: -L$LIB -lvips"
+            echo "Cflags: -I$INC -I$INC/vips"
+          } > "$PC/vips.pc"
+          {
+            echo "Name: vips-cpp"
+            echo "Description: Image processing library, C++ binding"
+            echo "Version: $VER"
+            echo "Requires: vips glib-2.0"
+            echo "Libs: -L$LIB -l:libvips-cpp.so.42"
+            echo "Cflags: -I$INC"
+          } > "$PC/vips-cpp.pc"
+
+          PKG_CONFIG_PATH="$PC" pkg-config --modversion vips-cpp
+          PKG_CONFIG_PATH="$PC" pkg-config --cflags vips-cpp vips glib-2.0
+          PKG_CONFIG_PATH="$PC" pkg-config --libs vips-cpp
+
+      - name: Patch sharp binding.gyp for Android
+        env:
+          IV_ABI: ${{ matrix.abi }}
+          IV_JAVET_SO: ${{ env.JAVET_SO }}
+        run: python3 wf/.github/workflows/_patch-sharp-android.py "$PWD/sharp/src/binding.gyp"
+
+      - name: Cross-compile & link sharp.node
+        env:
+          NDK: ${{ steps.ndk.outputs.ndk-path }}
+          TRIPLE: ${{ matrix.triple }}
+          ABI: ${{ matrix.abi }}
+          API: ${{ env.ANDROID_API }}
+          GYP_ARCH: ${{ matrix.gyp_arch }}
+          SHARP_FORCE_GLOBAL_LIBVIPS: '1'
+        run: |
+          set -eux
+          HOST_TAG=linux-x86_64
+          TOOL="$NDK/toolchains/llvm/prebuilt/$HOST_TAG/bin"
+          SYSROOT="$NDK/toolchains/llvm/prebuilt/$HOST_TAG/sysroot"
+          export CC="$TOOL/${TRIPLE}${API}-clang"
+          export CXX="$TOOL/${TRIPLE}${API}-clang++"
+          export AR="$TOOL/llvm-ar"
+          export RANLIB="$TOOL/llvm-ranlib"
+          export STRIP="$TOOL/llvm-strip"
+          export LINK="$CXX"
+          export CFLAGS="--sysroot=$SYSROOT -fPIC"
+          export CXXFLAGS="--sysroot=$SYSROOT -fPIC"
+          export LDFLAGS="--sysroot=$SYSROOT"
+
+          OUT="$PWD/stage/$ABI"
+          export PKG_CONFIG_PATH="$OUT/lib/pkgconfig"
+          export IV_JAVET_LIB="$PWD/javet/libs/$ABI/${{ env.JAVET_SO }}"
+
+          cd sharp
+          npm install --ignore-scripts --no-audit --no-fund
+
+          node-gyp configure --directory=src \
+            --nodedir="$HOME/.cache/node-gyp/${NODE_VERSION}" \
+            --arch="$GYP_ARCH"
+
+          node-gyp build --directory=src --release \
+            CC.target="$CC" CXX.target="$CXX" \
+            CC.host="$CC" CXX.host="$CXX" \
+            LINK.target="$CXX" AR.target="$AR"
+
+      - name: Collect artifacts into jniLibs
+        env:
+          ABI: ${{ matrix.abi }}
+        run: |
+          set -eux
+          OUT="$PWD/stage/$ABI"
+          DEST="$PWD/jniLibs/$ABI"
+          mkdir -p "$DEST"
+          node_file="$(find sharp/src/build -name 'sharp*.node' | head -n1)"
+          test -n "$node_file"
+          cp -v "$node_file" "$DEST/sharp.node"
+          # libvips + libvips-cpp + glib deps travel next to the addon
+          cp -av "$OUT/lib/"*.so* "$DEST/" 2>/dev/null || true
+          # drop the pkgconfig dir if it got copied
+          rm -rf "$DEST/pkgconfig"
+          file "$DEST/sharp.node"
+          ls -lh "$DEST"
+
+      - name: Upload per-abi artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sharp-android-${{ matrix.abi }}
+          path: jniLibs/${{ matrix.abi }}
+
+  pack:
+    name: Bundle jniLibs
+    needs: cross-build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download per-abi artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: sharp-android-*
+          path: incoming
+
+      - name: Assemble jniLibs layout
+        run: |
+          set -eux
+          mkdir -p jniLibs
+          for d in incoming/sharp-android-*; do
+            abi="${d##*sharp-android-}"
+            mkdir -p "jniLibs/$abi"
+            cp -av "$d/." "jniLibs/$abi/"
+          done
+          find jniLibs -type f | sort
+
+      - name: Zip
+        run: |
+          set -eux
+          zip -r "sharp-android-jniLibs-${{ env.SHARP_REF }}.zip" jniLibs
+
+      - name: Upload merged artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sharp-android-jniLibs
+          path: sharp-android-jniLibs-${{ env.SHARP_REF }}.zip
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: sharp-android-jniLibs-*.zip
