@@ -11,8 +11,11 @@ sharp is a Node-API addon that consumes libvips' C++ API. For Android we:
     libc++ cross build;
   * add an `OS == "linux"` link block (gyp's OS is "linux" when cross-compiling
     on a Linux host) that links the Javet Node runtime .so to resolve napi_*
-    at link time, links libvips-cpp, sets rpath $ORIGIN so the sibling libvips
-    .so files load at runtime, and enforces --no-undefined.
+    at link time, alongside libvips-cpp.
+
+No rpath is needed: Android's linker resolves every DT_NEEDED from the app's
+native library dir (jniLibs/<abi>/), where sharp.node and all the libvips/glib
+.so files live side by side.
 
 The Javet .so absolute path is taken from env IV_JAVET_LIB.
 
@@ -55,10 +58,9 @@ probe_re = re.compile(
 )
 src, n_probe = probe_re.subn("'_GLIBCXX_USE_CXX11_ABI=0'", src)
 
-# 2) Inject an Android link block. The stock global-libvips OS=="linux" link
-#    section links `-l:libvips-cpp.so.42` and sets several npm-layout rpaths.
-#    We prepend a marker define and add our own ldflags: link the Javet .so
-#    (napi_*), keep libvips-cpp, add rpath $ORIGIN, enforce --no-undefined.
+# 2) Inject the Javet Node runtime .so into the link libraries so napi_*
+#    symbols resolve at link time (verified via --no-undefined). We keep the
+#    existing libvips-cpp link entry and append the Javet .so by absolute path.
 #
 #    Anchor on the global-libvips linux link libraries entry.
 anchor = "'-l:libvips-cpp.so.42'"
@@ -79,20 +81,11 @@ new_libs = (
 )
 src = src.replace(anchor, new_libs, 1)
 
-# 3) Add Android ldflags (rpath + --no-undefined) right after the linux link
-#    ldflags list opens. Anchor on the first rpath ldflag in the global branch.
-ld_anchor = "'-Wl,-rpath=\\'$$ORIGIN/../../sharp-libvips-<(platform_and_arch)/lib\\''"
-if ld_anchor in src:
-    inject = (
-        "'-Wl,--no-undefined',\n"
-        "                '-Wl,-rpath,\\'$$ORIGIN\\'',\n"
-        "                " + ld_anchor
-    )
-    src = src.replace(ld_anchor, inject, 1)
-else:
-    # Fallback: append a dedicated ldflags entry is harder without a stable
-    # anchor; emit a warning marker so the build log shows it.
-    print("WARN: rpath ldflag anchor not found; relying on pkg-config libs only")
+# 3) No rpath needed on Android. Android's dynamic linker resolves DT_NEEDED
+#    dependencies from the app's nativeLibraryDir (the unpacked jniLibs/<abi>/),
+#    where sharp.node and all the libvips/glib .so files live side by side. This
+#    is unlike desktop Linux, which needs rpath $ORIGIN to find sibling libs.
+#    So we deliberately omit rpath to keep the binary lean.
 
 with open(GYP, "w", encoding="utf-8") as f:
     f.write(src)
