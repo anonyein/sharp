@@ -145,7 +145,7 @@ jobs:
             -o "libvips/*:with_heif=True" \
             -o "libvips/*:with_jpeg_xl=False" \
             -o "libvips/*:with_openjpeg=True" \
-            -o "libvips/*:with_imagequant=True" \
+            -o "libvips/*:with_imagequant=False" \
             -o "libvips/*:with_highway=True" \
             -o "libvips/*:with_fftw=False" \
             -o "libvips/*:with_nsgif=True" \
