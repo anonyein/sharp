@@ -150,26 +150,36 @@ jobs:
             --dependency-prefix "$INSTALL" \
             --target libvips
           echo "install=$INSTALL" >> "$GITHUB_OUTPUT"
-          echo "--- built tree (android) ---"
-          find "$INSTALL" -maxdepth 3 -type d | sort | head -60
+          echo "--- built tree (dirs) ---"
+          find "$INSTALL" -maxdepth 4 -type d | sort | head -80
+          echo "--- all .so under install ---"
+          find "$INSTALL" -name '*.so*' | sort
+          echo "--- all .pc under install ---"
+          find "$INSTALL" -name '*.pc' | sort
 
       - name: Locate libvips staging for ${{ matrix.abi }}
         id: stage
         run: |
           set -eux
           INSTALL="${{ steps.vips.outputs.install }}"
-          # MobiPkg installs per-arch; find the dir that actually holds libvips.so
-          libvips_so="$(find "$INSTALL" -type f -name 'libvips.so' | head -n1)"
-          test -n "$libvips_so"
+          # MobiPkg may install libvips as libvips.so or a versioned libvips.so.42,
+          # and under a per-arch subdir. Match loosely on the real payload name.
+          libvips_so="$(find "$INSTALL" -type f \( -name 'libvips.so' -o -name 'libvips.so.*' \) | head -n1)"
+          if [ -z "$libvips_so" ]; then
+            echo "::error::libvips shared library not found under $INSTALL"
+            echo "--- full file listing for diagnosis ---"
+            find "$INSTALL" -type f | sort
+            exit 1
+          fi
           LIBDIR="$(dirname "$libvips_so")"
           ROOT="$(dirname "$LIBDIR")"
           echo "root=$ROOT" >> "$GITHUB_OUTPUT"
           echo "libdir=$LIBDIR" >> "$GITHUB_OUTPUT"
-          echo "--- libvips.so found at: $libvips_so ---"
+          echo "--- libvips found at: $libvips_so ---"
           echo "--- .so in libdir ---"
           ls -lh "$LIBDIR"/*.so* 2>/dev/null || true
           echo "--- libvips-cpp present? ---"
-          find "$ROOT" -name 'libvips-cpp.so*' -o -name 'libvips-cpp*.so' | head || true
+          find "$ROOT" \( -name 'libvips-cpp.so*' -o -name 'libvips-cpp*.so' \) | head || true
           echo "--- pkgconfig ---"
           find "$ROOT" -name '*.pc' | head -30
 
