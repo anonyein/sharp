@@ -17,3 +17,4 @@ package-lock.json
 docs/dist
 release-notes.md
 dist
+.github/workflows/__pycache__/
