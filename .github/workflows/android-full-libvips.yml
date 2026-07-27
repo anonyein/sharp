@@ -139,7 +139,7 @@ jobs:
             -o "libvips/*:with_png=libpng" \
             -o "libvips/*:with_webp=True" \
             -o "libvips/*:with_tiff=True" \
-            -o "libvips/*:with_cgif=True" \
+            -o "libvips/*:with_cgif=False" \
             -o "libvips/*:with_exif=True" \
             -o "libvips/*:with_lcms=True" \
             -o "libvips/*:with_heif=True" \
