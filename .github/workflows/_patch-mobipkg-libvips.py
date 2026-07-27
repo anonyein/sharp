@@ -109,6 +109,42 @@ with open(WORKSPACE, "w", encoding="utf-8") as f:
     yaml.safe_dump(ws, f, sort_keys=False, allow_unicode=True)
 print(f"workspace.yaml: inserted libs {[l['name'] for l in to_insert]}")
 
+# ---- 1b) per-dep flag workarounds ------------------------------------------
+# Some dep recipes enable -Werror while MobiPkg injects -L into the *compile*
+# command line (harmless but unused at compile time), tripping
+# -Werror,-Wunused-command-line-argument. -Qunused-arguments silences exactly
+# that clang diagnostic without weakening real error checking.
+DEP_FLAG_PATCHES = {
+    "libheif": {"c": "-Qunused-arguments", "cxx": "-Qunused-arguments"},
+}
+
+
+def patch_dep_flags(dep_path, extra):
+    """Append extra c/cxx flags to a dep's lib.yaml (idempotent)."""
+    p = os.path.join(BASE, dep_path, "lib.yaml")
+    if not os.path.isfile(p):
+        print(f"WARN: dep lib.yaml missing, cannot patch flags: {p}")
+        return
+    with open(p, encoding="utf-8") as f:
+        d = yaml.safe_load(f)
+    flags = d.get("flags") or {}
+    for key, add in extra.items():
+        cur = flags.get(key) or ""
+        if add not in cur.split():
+            flags[key] = (cur + " " + add).strip()
+    d["flags"] = flags
+    with open(p, "w", encoding="utf-8") as f:
+        yaml.safe_dump(d, f, sort_keys=False, allow_unicode=True)
+    print(f"{dep_path}/lib.yaml: flags += {extra}")
+
+
+# Only patch deps that are actually being built for the requested formats.
+_dep_paths = {name: path for fmt in formats if FORMAT_MAP.get(fmt)
+              for name, path in FORMAT_MAP[fmt]["libs"]}
+for name, extra in DEP_FLAG_PATCHES.items():
+    if name in _dep_paths:
+        patch_dep_flags(_dep_paths[name], extra)
+
 # ---- 2) libvips/lib.yaml : enable cplusplus + formats + deps ---------------
 with open(LIBVIPS, encoding="utf-8") as f:
     lv = yaml.safe_load(f)
