@@ -123,6 +123,24 @@ DEP_FLAG_PATCHES = {
 # `type: cmake`, so cmake aborts with "does not appear to contain CMakeLists.txt".
 # Rewrite the whole recipe body for such deps to a correct autotools build.
 DEP_RECIPE_OVERRIDES = {
+    # lcms2's recipe passes -Ddefault_library=static, but MobiPkg's meson wrapper
+    # already injects --default-library=both. meson rejects the duplicated builtin
+    # option, so drop it and let MobiPkg drive the library type.
+    "lcms2": {
+        "name": "lcms2",
+        "type": "meson",
+        "source": {
+            "git": {
+                "url": "https://github.com/mm2/Little-CMS.git",
+                "ref": "lcms2.16",
+            }
+        },
+        "license": "LICENSE",
+        "options": [
+            "-Dutils=false",
+            "-Dsamples=false",
+        ],
+    },
     "libexif": {
         "name": "libexif",
         "type": "autotools",
