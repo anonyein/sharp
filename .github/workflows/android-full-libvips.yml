@@ -140,7 +140,16 @@ jobs:
           set -eux
           cd mobipkg
           INSTALL="$PWD/example/libvips/install"
-          mkdir -p "$INSTALL"
+          ARCH_PREFIX="$INSTALL/android/${{ matrix.abi }}"
+          mkdir -p "$ARCH_PREFIX/bin" "$ARCH_PREFIX/lib/pkgconfig"
+          # MobiPkg builds deps (glib, etc.) then libvips in one pass, but does
+          # NOT wire prior deps' bin/ + pkgconfig/ into the later libvips meson
+          # setup. libvips needs glib's host tools (glib-mkenums / glib-genmarshal)
+          # and glib-2.0.pc. glib installs them into <prefix>/bin and
+          # <prefix>/lib/pkgconfig, so pre-seed PATH + PKG_CONFIG_PATH to point
+          # there for the whole build.
+          export PATH="$ARCH_PREFIX/bin:$PATH"
+          export PKG_CONFIG_PATH="$ARCH_PREFIX/lib/pkgconfig:$ARCH_PREFIX/share/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
           # ARM-only per MobiPkg's android.sh (x86 breaks on libffi asm).
           dart run bin/compile.dart workspace \
             -C example/libvips \
