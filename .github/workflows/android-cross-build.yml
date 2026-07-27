@@ -191,8 +191,8 @@ jobs:
           mkdir -p "$PC"
           VER="${{ env.LIBVIPS_SOURCE_VERSION }}"
 
-          # Write .pc files with absolute paths (no ${prefix} indirection, to
-          # avoid GitHub Actions treating ${{...}} as an expression).
+          # Write .pc files with absolute paths (no prefix indirection, to keep
+          # things simple and avoid any expression-like tokens in this file).
           LIB="$OUT/lib"
           INC="$OUT/include"
           {
