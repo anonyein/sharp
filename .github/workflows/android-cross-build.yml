@@ -35,22 +35,22 @@ on:
       node_version:
         description: 'Node.js version (headers) for the Android build'
         required: false
-        default: '24.18.0'
+        default: '24.19.0'
 
 permissions:
   contents: write
 
 env:
   SHARP_REF: ${{ github.event.inputs.sharp_ref || 'v0.33.5' }}
-  NODE_VERSION: ${{ github.event.inputs.node_version || '24.18.0' }}
+  NODE_VERSION: ${{ github.event.inputs.node_version || '24.19.0' }}
   NDK_VERSION: r27d
   ANDROID_API: '24'
   LIBVIPS_SOURCE_VERSION: '8.16.0'
   # Prebuilt Android libvips (C library + C headers), CaiJingLong/libvips_precompile_mobile
   LIBVIPS_ANDROID_URL: https://github.com/CaiJingLong/libvips_precompile_mobile/releases/download/android-mobipkg-2025-12-12-11/libvips-android-mobipkg-android-mobipkg-2025-12-12-11.tar.xz
   # Javet Node runtime .so bundle (libs/<abi>/<so> layout inside), from isolated-vm repo
-  JAVET_SO: libjavet-node-android-i18n.v.5.0.10.so
-  JAVET_SO_ZIP_URL: https://raw.githubusercontent.com/anonyein/isolated-vm/main/libjavet-node-android-i18n.v.5.0.10.zip
+  JAVET_SO: libjavet-node-android-i18n.v.5.0.11.so
+  JAVET_SO_ZIP_URL: https://raw.githubusercontent.com/anonyein/isolated-vm/main/libjavet-node-android-i18n.v.5.0.11.zip
 
 jobs:
   cross-build:
