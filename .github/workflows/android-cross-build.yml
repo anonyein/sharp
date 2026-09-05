@@ -33,24 +33,29 @@ on:
         required: false
         default: 'v0.33.5'
       node_version:
-        description: 'Node.js version (headers) for the Android build'
+        description: 'Node.js version (headers). Must match the Javet .so runtime (6.0.0 -> 26.8.1)'
         required: false
-        default: '24.19.0'
+        default: '26.8.1'
 
 permissions:
   contents: write
 
 env:
   SHARP_REF: ${{ github.event.inputs.sharp_ref || 'v0.33.5' }}
-  NODE_VERSION: ${{ github.event.inputs.node_version || '24.19.0' }}
+  # MUST match the Node version baked into the Javet .so below. Javet 6.0.0
+  # embeds Node v26.8.1 / V8 14.6.202.34 (NODE_MODULE_VERSION 147). Mismatched
+  # headers link against the wrong node_api layout.
+  NODE_VERSION: ${{ github.event.inputs.node_version || '26.8.1' }}
   NDK_VERSION: r27d
   ANDROID_API: '24'
   LIBVIPS_SOURCE_VERSION: '8.16.0'
   # Prebuilt Android libvips (C library + C headers), CaiJingLong/libvips_precompile_mobile
   LIBVIPS_ANDROID_URL: https://github.com/CaiJingLong/libvips_precompile_mobile/releases/download/android-mobipkg-2025-12-12-11/libvips-android-mobipkg-android-mobipkg-2025-12-12-11.tar.xz
-  # Javet Node runtime .so bundle (libs/<abi>/<so> layout inside), from isolated-vm repo
-  JAVET_SO: libjavet-node-android-i18n.v.5.0.11.so
-  JAVET_SO_ZIP_URL: https://raw.githubusercontent.com/anonyein/isolated-vm/main/libjavet-node-android-i18n.v.5.0.11.zip
+  # Javet Node runtime .so bundle (libs/<abi>/<so> layout inside), from isolated-vm
+  # repo. Published as one zip per ABI (<prefix>-<abi>.zip) because the combined
+  # zip exceeded GitHub's 100MB file limit; only the ABI being built is fetched.
+  JAVET_SO: libjavet-node-android-i18n.v.6.0.0.so
+  JAVET_SO_ZIP_URL_PREFIX: https://raw.githubusercontent.com/anonyein/isolated-vm/main/libjavet-node-android-i18n.v.6.0.0
 
 jobs:
   cross-build:
@@ -132,9 +137,10 @@ jobs:
       - name: Download & extract Javet runtime .so
         run: |
           set -eux
-          curl -fL -o javet.zip "${{ env.JAVET_SO_ZIP_URL }}"
+          curl -fL -o javet.zip "${{ env.JAVET_SO_ZIP_URL_PREFIX }}-${{ matrix.abi }}.zip"
           unzip -o javet.zip -d javet
           test -f "javet/libs/${{ matrix.abi }}/${{ env.JAVET_SO }}"
+          ls -lh "javet/libs/${{ matrix.abi }}/${{ env.JAVET_SO }}"
 
       - name: Cross-compile libvips-cpp.so.42
         env:

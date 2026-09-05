@@ -33,9 +33,9 @@ on:
         required: false
         default: 'v0.33.5'
       node_version:
-        description: 'Node.js version (headers)'
+        description: 'Node.js version (headers). Must match the Javet .so runtime (6.0.0 -> 26.8.1)'
         required: false
-        default: '24.18.0'
+        default: '26.8.1'
       formats:
         description: 'Comma list of extra libvips formats (tiff,heif,openjpeg,lcms,exif)'
         required: false
@@ -48,13 +48,17 @@ permissions:
 
 env:
   SHARP_REF: ${{ github.event.inputs.sharp_ref || 'v0.33.5' }}
-  NODE_VERSION: ${{ github.event.inputs.node_version || '24.18.0' }}
+  # MUST match the Node version baked into the Javet .so below (6.0.0 -> v26.8.1,
+  # V8 14.6.202.34, NODE_MODULE_VERSION 147).
+  NODE_VERSION: ${{ github.event.inputs.node_version || '26.8.1' }}
   IV_FORMATS: ${{ github.event.inputs.formats || 'tiff' }}
   NDK_VERSION: r25c
   ANDROID_API: '24'
   MOBIPKG_REPO: https://github.com/MobiPkg/Compile.git
-  JAVET_SO: libjavet-node-android-i18n.v.5.0.10.so
-  JAVET_SO_ZIP_URL: https://raw.githubusercontent.com/anonyein/isolated-vm/main/libjavet-node-android-i18n.v.5.0.10.zip
+  # Javet Node runtime .so, published per ABI (<prefix>-<abi>.zip) from the
+  # isolated-vm repo because the combined zip exceeded GitHub's 100MB file limit.
+  JAVET_SO: libjavet-node-android-i18n.v.6.0.0.so
+  JAVET_SO_ZIP_URL_PREFIX: https://raw.githubusercontent.com/anonyein/isolated-vm/main/libjavet-node-android-i18n.v.6.0.0
 
 jobs:
   full-build:
@@ -228,9 +232,10 @@ jobs:
       - name: Download & extract Javet runtime .so
         run: |
           set -eux
-          curl -fL -o javet.zip "${{ env.JAVET_SO_ZIP_URL }}"
+          curl -fL -o javet.zip "${{ env.JAVET_SO_ZIP_URL_PREFIX }}-${{ matrix.abi }}.zip"
           unzip -o javet.zip -d javet
           test -f "javet/libs/${{ matrix.abi }}/${{ env.JAVET_SO }}"
+          ls -lh "javet/libs/${{ matrix.abi }}/${{ env.JAVET_SO }}"
 
       - name: Patch sharp binding.gyp for Android
         env:
