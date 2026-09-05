@@ -11,7 +11,15 @@ sharp is a Node-API addon that consumes libvips' C++ API. For Android we:
     libc++ cross build;
   * add an `OS == "linux"` link block (gyp's OS is "linux" when cross-compiling
     on a Linux host) that links the Javet Node runtime .so to resolve napi_*
-    at link time, alongside libvips-cpp.
+    at link time, alongside libvips-cpp;
+  * raise sharp's own `-std=c++0x` (i.e. C++11) to C++17. sharp's target-level
+    cflags_cc are appended *after* node's common.gypi `-std=gnu++20`, and the
+    last -std on the command line wins, so upstream effectively pins the addon
+    to C++11. node-addon-api 8.9.2 (2026-08-12) started using std::void_t,
+    std::enable_if_t, std::is_null_pointer_v, std::decay_t and `if constexpr`
+    in napi.h, none of which exist in C++11, so the build breaks with
+    "no template named 'void_t' in namespace 'std'". sharp declares
+    node-addon-api "^8.1.0", so this lands automatically on fresh installs.
 
 No rpath is needed: Android's linker resolves every DT_NEEDED from the app's
 native library dir (jniLibs/<abi>/), where sharp.node and all the libvips/glib
@@ -58,6 +66,21 @@ probe_re = re.compile(
 )
 src, n_probe = probe_re.subn("'_GLIBCXX_USE_CXX11_ABI=0'", src)
 
+# 1b) Raise sharp's own -std=c++0x to C++17.
+#
+#     gyp emits target cflags_cc after common.gypi's, and clang honours the last
+#     -std, so upstream's '-std=c++0x' downgrades the whole addon to C++11.
+#     node-addon-api >= 8.9.2 requires C++17 (std::void_t, std::enable_if_t,
+#     std::is_null_pointer_v, std::decay_t, `if constexpr`).
+std_re = re.compile(r"'-std=c\+\+0x'")
+src, n_std = std_re.subn("'-std=c++17'", src)
+if n_std == 0:
+    # Upstream may have already moved to a newer standard; only fail if there is
+    # no acceptable -std at all in the target cflags_cc.
+    if not re.search(r"'-std=(c|gnu)\+\+(1[4-9]|2[0-9])'", src):
+        sys.exit("could not find sharp's -std=c++0x to raise to C++17")
+    print("sharp already targets C++14 or newer; leaving -std alone")
+
 # 2) Inject the Javet Node runtime .so into the link libraries so napi_*
 #    symbols resolve at link time (verified via --no-undefined). We keep the
 #    existing libvips-cpp link entry and append the Javet .so by absolute path.
@@ -90,4 +113,7 @@ src = src.replace(anchor, new_libs, 1)
 with open(GYP, "w", encoding="utf-8") as f:
     f.write(src)
 
-print(f"patched sharp binding.gyp (probe replaced: {n_probe}); linked Javet: {javet_lib}")
+print(
+    f"patched sharp binding.gyp (probe replaced: {n_probe}, "
+    f"-std raised to c++17: {n_std}); linked Javet: {javet_lib}"
+)
