@@ -547,6 +547,8 @@ sharp('input.tiff').jxl({ quality: 50 }).toFile('out.jxl');
 sharp('input.tiff').jxl({ decodingTier: 4 }).toFile('out.jxl');
 sharp('input.tiff').jxl({ lossless: true }).toFile('out.jxl');
 sharp('input.tiff').jxl({ effort: 7 }).toFile('out.jxl');
+sharp('input.tiff').jxl({ loop: 3 }).toFile('out.jxl');
+sharp('input.tiff').jxl({ delay: [100, 200] }).toFile('out.jxl');
 
 // Support webp options
 sharp('input.tiff').webp({ minSize: true, mixed: true, exact: true }).toFile('out.webp');
@@ -819,3 +821,7 @@ sharp().metadata().then((metadata: Metadata) => {
     const mediaType: MediaType = metadata.mediaType;
   }
 });
+
+// @ts-expect-error
+import { sharp as fail } from '../../';
+fail();
