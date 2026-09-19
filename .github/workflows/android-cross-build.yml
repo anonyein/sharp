@@ -33,19 +33,19 @@ on:
         required: false
         default: 'v0.33.5'
       node_version:
-        description: 'Node.js version (headers). Must match the Javet .so runtime (6.0.0 -> 26.8.1)'
+        description: 'Node.js version (headers). Must match the Javet .so runtime (6.0.1 -> 26.9.0)'
         required: false
-        default: '26.8.1'
+        default: '26.9.0'
 
 permissions:
   contents: write
 
 env:
   SHARP_REF: ${{ github.event.inputs.sharp_ref || 'v0.33.5' }}
-  # MUST match the Node version baked into the Javet .so below. Javet 6.0.0
-  # embeds Node v26.8.1 / V8 14.6.202.34 (NODE_MODULE_VERSION 147). Mismatched
+  # MUST match the Node version baked into the Javet .so below. Javet 6.0.1
+  # embeds Node v26.9.0 / V8 14.6.202.34 (NODE_MODULE_VERSION 147). Mismatched
   # headers link against the wrong node_api layout.
-  NODE_VERSION: ${{ github.event.inputs.node_version || '26.8.1' }}
+  NODE_VERSION: ${{ github.event.inputs.node_version || '26.9.0' }}
   NDK_VERSION: r27d
   ANDROID_API: '24'
   LIBVIPS_SOURCE_VERSION: '8.16.0'
@@ -54,8 +54,8 @@ env:
   # Javet Node runtime .so bundle (libs/<abi>/<so> layout inside), from isolated-vm
   # repo. Published as one zip per ABI (<prefix>-<abi>.zip) because the combined
   # zip exceeded GitHub's 100MB file limit; only the ABI being built is fetched.
-  JAVET_SO: libjavet-node-android-i18n.v.6.0.0.so
-  JAVET_SO_ZIP_URL_PREFIX: https://raw.githubusercontent.com/anonyein/isolated-vm/main/libjavet-node-android-i18n.v.6.0.0
+  JAVET_SO: libjavet-node-android-i18n.v.6.0.1.so
+  JAVET_SO_ZIP_URL_PREFIX: https://raw.githubusercontent.com/anonyein/isolated-vm/main/libjavet-node-android-i18n.v.6.0.1
 
 jobs:
   cross-build:
