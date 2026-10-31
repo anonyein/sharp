@@ -1,3 +1,4 @@
+/* cspell:disable */
 /**
  * Copyright 2017 François Nguyen and others.
  *
@@ -22,6 +23,7 @@
  * COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
  * OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
+/* cspell:enable */
 
 // SPDX-License-Identifier: MIT
 
@@ -408,7 +410,7 @@ declare namespace sharp {
 
         /**
          * Alias for calling `rotate()` with no arguments, which orients the image based
-         * on EXIF orientsion.
+         * on EXIF orientation.
          *
          * This operation is aliased to emphasize its purpose, helping to remove any
          * confusion between rotation and orientation.
@@ -580,7 +582,7 @@ declare namespace sharp {
         convolve(kernel: Kernel): Sharp;
 
         /**
-         * Any pixel value greather than or equal to the threshold value will be set to 255, otherwise it will be set to 0.
+         * Any pixel value greater than or equal to the threshold value will be set to 255, otherwise it will be set to 0.
          * @param threshold a value in the range 0-255 representing the level at which the threshold will be applied. (optional, default 128)
          * @param options threshold options
          * @throws {Error} Invalid parameters
@@ -1460,8 +1462,8 @@ declare namespace sharp {
     interface HeifOptions extends OutputOptions {
         /** quality, integer 1-100 (optional, default 50) */
         quality?: number | undefined;
-        /** compression format: av1, hevc (optional, default 'av1') */
-        compression?: HeifCompression | undefined;
+        /** compression format: av1, hevc */
+        compression: HeifCompression;
         /** use lossless compression (optional, default false) */
         lossless?: boolean | undefined;
         /** Level of CPU effort to reduce file size, between 0 (fastest) and 9 (slowest) (optional, default 4) */
@@ -1470,7 +1472,7 @@ declare namespace sharp {
         chromaSubsampling?: string | undefined;
         /** Set bitdepth to 8, 10 or 12 bit (optional, default 8) */
         bitdepth?: 8 | 10 | 12 | undefined;
-        /** Tune output for a quality metric, one of 'auto', 'iq', 'psnr' or 'ssim' (optional, default 'auto') */
+        /** Tune output for a quality metric, one of 'auto' (av1 default), 'iq' (av1 only), 'psnr' or 'ssim' (hevc default) */
         tune?: HeifTune | undefined;
     }
 
@@ -1699,7 +1701,7 @@ declare namespace sharp {
         left?: number | undefined;
         /** set to true to repeat the overlay image across the entire image with the given  gravity. (optional, default false) */
         tile?: boolean | undefined;
-        /** Set to true to avoid premultipling the image below. Equivalent to the --premultiplied vips option. */
+        /** Set to true to avoid premultiplying the image below. Equivalent to the --premultiplied vips option. */
         premultiplied?: boolean | undefined;
         /** number representing the DPI for vector overlay image. (optional, default 72)*/
         density?: number | undefined;

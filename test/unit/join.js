@@ -1,5 +1,5 @@
 /*!
-  Copyright 2013 Lovell Fuller and others.
+  SPDX-FileCopyrightText: 2013 Lovell Fuller and others
   SPDX-License-Identifier: Apache-2.0
 */
 
@@ -122,6 +122,26 @@ suite('Join input images together', () => {
     t.assert.throws(
       () => sharp([fixtures.inputJpg, fixtures.inputJpg], { join: { shim: -1 } }),
       /Expected integer between 0 and 100000 for join.shim but received -1 of type number/
+    );
+  });
+  test('Animated with across throws', (t) => {
+    t.plan(2);
+    t.assert.throws(
+      () => sharp([fixtures.inputJpg, fixtures.inputJpg], { join: { animated: true, across: 2 } }),
+      /Expected neither join.across nor join.shim when join.animated is set/
+    );
+    t.assert.doesNotThrow(
+      () => sharp([fixtures.inputJpg, fixtures.inputJpg], { join: { animated: true, across: 1 } })
+    );
+  });
+  test('Animated with shim throws', (t) => {
+    t.plan(2);
+    t.assert.throws(
+      () => sharp([fixtures.inputJpg, fixtures.inputJpg], { join: { animated: true, shim: 4 } }),
+      /Expected neither join.across nor join.shim when join.animated is set/
+    );
+    t.assert.doesNotThrow(
+      () => sharp([fixtures.inputJpg, fixtures.inputJpg], { join: { animated: true, shim: 0 } })
     );
   });
   test('Invalid halign', (t) => {

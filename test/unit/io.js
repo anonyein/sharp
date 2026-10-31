@@ -1,5 +1,5 @@
 /*!
-  Copyright 2013 Lovell Fuller and others.
+  SPDX-FileCopyrightText: 2013 Lovell Fuller and others
   SPDX-License-Identifier: Apache-2.0
 */
 
@@ -492,6 +492,17 @@ suite('Input/output', () => {
     t.assert.strictEqual(info.format, 'jpeg');
     t.assert.strictEqual(info.width, 320);
     t.assert.strictEqual(info.height, 240);
+  });
+
+  test('Sequential read option controls access method', async (t) => {
+    t.plan(2);
+    for (const sequentialRead of [true, false]) {
+      const outputV = fixtures.path(`output.sequential-read-${sequentialRead}.v`);
+      await sharp(fixtures.inputJpg, { sequentialRead }).toFile(outputV);
+      const contents = await fs.readFile(outputV, 'latin1');
+      t.assert.strictEqual(contents.includes('vips-sequential'), sequentialRead);
+      await fs.rm(outputV);
+    }
   });
 
   test('Support output to jpg format', async (t) => {

@@ -1,5 +1,5 @@
 /*!
-  Copyright 2013 Lovell Fuller and others.
+  SPDX-FileCopyrightText: 2013 Lovell Fuller and others
   SPDX-License-Identifier: Apache-2.0
 */
 
@@ -125,6 +125,7 @@ module.exports = {
   inputGifGreyPlusAlpha: getPath('grey-plus-alpha.gif'), // http://i.imgur.com/gZ5jlmE.gif
   inputGifAnimated: getPath('rotating-squares.gif'), // CC0 https://loading.io/spinner/blocks/-rotating-squares-preloader-gif
   inputGifAnimatedLoop3: getPath('animated-loop-3.gif'), // CC-BY-SA-4.0 Petrus3743 https://commons.wikimedia.org/wiki/File:01-Goldener_Schnitt_Formel-Animation.gif
+  inputJxlAnimated: getPath('rotating-squares.jxl'), // CC0 https://loading.io/spinner/blocks/-rotating-squares-preloader-gif
   inputSvg: getPath('check.svg'), // http://dev.w3.org/SVG/tools/svgweb/samples/svg-files/check.svg
   inputSvgSmallViewBox: getPath('circle.svg'),
   inputSvgWithEmbeddedImages: getPath('struct-image-04-t.svg'), // https://dev.w3.org/SVG/profiles/1.2T/test/svg/struct-image-04-t.svg
@@ -152,6 +153,8 @@ module.exports = {
   fontFamily: 'Noto Sans',
 
   isLittleEndian: endianness() === 'LE',
+
+  isLsan: process.env.LSAN_OPTIONS?.includes('detect_leaks=1'),
 
   // Path for tests requiring human inspection
   path: getPath,

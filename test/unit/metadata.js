@@ -1,5 +1,5 @@
 /*!
-  Copyright 2013 Lovell Fuller and others.
+  SPDX-FileCopyrightText: 2013 Lovell Fuller and others
   SPDX-License-Identifier: Apache-2.0
 */
 
@@ -1044,6 +1044,22 @@ suite('Image metadata', () => {
     t.assert.strictEqual(icc.parse(metadata.icc).description, 'Generic RGB Profile');
   });
 
+  test('keep existing ICC profile when intermediate images are not cached', async (t) => {
+    t.plan(1);
+    sharp.cache(false);
+    try {
+      const data = await sharp(fixtures.inputJpgWithExif)
+        .greyscale()
+        .rotate(90)
+        .keepIccProfile()
+        .toBuffer();
+      const metadata = await sharp(data).metadata();
+      t.assert.strictEqual(icc.parse(metadata.icc).description, 'Generic RGB Profile');
+    } finally {
+      sharp.cache(true);
+    }
+  });
+
   test('keep existing CMYK input profile for CMYK output', async (t) => {
     t.plan(1);
     const data = await sharp(fixtures.inputJpgWithCmykProfile)
@@ -1088,6 +1104,15 @@ suite('Image metadata', () => {
       channels: 4,
       description: 'U.S. Web Coated (SWOP) v2'
     });
+  });
+
+  test('attempt to keep existing profile ensuring memory is freed correctly on error', async (t) => {
+    t.plan(1);
+    const overlay = [{ input: { create: { width: 17, height: 17, channels: 3, background: 'red' } } }];
+    await t.assert.rejects(
+      sharp(fixtures.inputJpgWithExif).keepIccProfile().resize(16, 16, { fit: 'fill' }).composite(overlay).toBuffer(),
+      /Image to composite must have same dimensions or smaller/
+    );
   });
 
   test('transform to ICC profile and attach', async (t) => {
@@ -1749,6 +1774,10 @@ suite('Image metadata', () => {
       t.plan(1);
       t.assert.throws(() => sharp().withMetadata({ density: -1 }));
     });
+    test('Out of range density', (t) => {
+      t.plan(1);
+      t.assert.throws(() => sharp().withMetadata({ density: 100001 }), /Expected number between 1 and 100000 for density but received 100001 of type number/);
+    });
     test('Non string icc', (t) => {
       t.plan(1);
       t.assert.throws(() => sharp().withMetadata({ icc: true }));
@@ -1779,11 +1808,15 @@ suite('Image metadata', () => {
     });
     test('withDensity missing density', (t) => {
       t.plan(1);
-      t.assert.throws(() => sharp().withDensity(), /Expected positive number for density but received undefined of type undefined/);
+      t.assert.throws(() => sharp().withDensity(), /Expected number between 1 and 100000 for density but received undefined of type undefined/);
     });
     test('withDensity invalid density', (t) => {
       t.plan(1);
-      t.assert.throws(() => sharp().withDensity('invalid'), /Expected positive number for density but received invalid of type string/);
+      t.assert.throws(() => sharp().withDensity('invalid'), /Expected number between 1 and 100000 for density but received invalid of type string/);
+    });
+    test('withDensity out of range density', (t) => {
+      t.plan(1);
+      t.assert.throws(() => sharp().withDensity(100001), /Expected number between 1 and 100000 for density but received 100001 of type number/);
     });
   });
 });

@@ -1,5 +1,5 @@
 /*!
-  Copyright 2013 Lovell Fuller and others.
+  SPDX-FileCopyrightText: 2013 Lovell Fuller and others
   SPDX-License-Identifier: Apache-2.0
 */
 
@@ -40,6 +40,7 @@ class PipelineWorker : public Napi::AsyncWorker {
     // Increment processing task counter
     sharp::counterProcess++;
 
+    std::pair<char*, size_t> inputProfile(nullptr, 0);
     try {
       // Open input
       vips::VImage image;
@@ -56,9 +57,9 @@ class PipelineWorker : public Napi::AsyncWorker {
           hasAlpha |= image.has_alpha();
         }
         if (hasAlpha) {
-          for (auto &image : images) {
-            if (!image.has_alpha()) {
-              image = sharp::EnsureAlpha(image, 1);
+          for (size_t i = 0; i < images.size(); i++) {
+            if (!images[i].has_alpha()) {
+              images[i] = sharp::EnsureAlpha(images[i], 1);
             }
           }
         } else {
@@ -78,7 +79,20 @@ class PipelineWorker : public Napi::AsyncWorker {
         }
       }
       VipsAccess access = baton->input->access;
-      image = sharp::EnsureColourspace(image, baton->colourspacePipeline);
+      // A device-independent colourspace is reached through the ICC profile connection space, either Lab or XYZ
+      bool const labPcs =
+        baton->colourspacePipeline == VIPS_INTERPRETATION_LAB ||
+        baton->colourspacePipeline == VIPS_INTERPRETATION_LABS ||
+        baton->colourspacePipeline == VIPS_INTERPRETATION_LCH;
+      bool const xyzPcs =
+        baton->colourspacePipeline == VIPS_INTERPRETATION_scRGB ||
+        baton->colourspacePipeline == VIPS_INTERPRETATION_XYZ ||
+        baton->colourspacePipeline == VIPS_INTERPRETATION_YXY;
+      // lcms needs 8/16-bit device values, so the conversion must wait for the import
+      bool const deferColourspace = sharp::HasProfile(image) && (labPcs || xyzPcs);
+      if (!deferColourspace) {
+        image = sharp::EnsureColourspace(image, baton->colourspacePipeline);
+      }
 
       int nPages = baton->input->pages;
       if (nPages == -1) {
@@ -94,7 +108,10 @@ class PipelineWorker : public Napi::AsyncWorker {
       // Calculate angle of rotation
       VipsAngle rotation = VIPS_ANGLE_D0;
       VipsAngle autoRotation = VIPS_ANGLE_D0;
+      VipsAngle gainMapRotation = VIPS_ANGLE_D0;
       bool autoFlop = false;
+      bool gainMapFlip = false;
+      bool gainMapFlop = false;
 
       if (baton->input->autoOrient) {
         // Rotate and flip image according to Exif orientation
@@ -115,11 +132,13 @@ class PipelineWorker : public Napi::AsyncWorker {
             MultiPageUnsupported(nPages, "Rotate");
           }
           image = image.rot(autoRotation);
+          gainMapRotation = autoRotation;
           autoRotation = VIPS_ANGLE_D0;
         }
         if (autoFlop) {
           image = image.flip(VIPS_DIRECTION_HORIZONTAL);
           autoFlop = false;
+          gainMapFlop = true;
         }
       }
 
@@ -128,20 +147,24 @@ class PipelineWorker : public Napi::AsyncWorker {
         if (baton->flip) {
           image = image.flip(VIPS_DIRECTION_VERTICAL);
           baton->flip = false;
+          gainMapFlip = true;
         }
         if (baton->flop) {
           image = image.flip(VIPS_DIRECTION_HORIZONTAL);
           baton->flop = false;
+          gainMapFlop = true;
         }
         if (rotation != VIPS_ANGLE_D0) {
           if (rotation != VIPS_ANGLE_D180) {
             MultiPageUnsupported(nPages, "Rotate");
           }
           image = image.rot(rotation);
+          gainMapRotation = rotation;
           rotation = VIPS_ANGLE_D0;
         }
         if (baton->rotationAngle != 0.0) {
           MultiPageUnsupported(nPages, "Rotate");
+          KeepGainMapUnsupported(baton->keepGainMap, "Rotate");
           std::vector<double> background;
           std::tie(image, background) = sharp::ApplyAlpha(image, baton->rotationBackground, false);
           image = image.rotate(baton->rotationAngle, VImage::option()->set("background", background)).copy_memory();
@@ -152,6 +175,7 @@ class PipelineWorker : public Napi::AsyncWorker {
       // Trim
       if (baton->trimThreshold >= 0.0) {
         MultiPageUnsupported(nPages, "Trim");
+        KeepGainMapUnsupported(baton->keepGainMap, "Trim");
         image = sharp::StaySequential(image);
         image = sharp::Trim(image, baton->trimBackground, baton->trimThreshold, baton->trimLineArt, baton->trimMargin);
         baton->trimOffsetLeft = image.xoffset();
@@ -246,7 +270,12 @@ class PipelineWorker : public Napi::AsyncWorker {
         if (baton->input->buffer != nullptr) {
           // Reload JPEG buffer
           VipsBlob *blob = vips_blob_new(nullptr, baton->input->buffer, baton->input->bufferLength);
-          image = VImage::jpegload_buffer(blob, option);
+          try {
+            image = VImage::jpegload_buffer(blob, option);
+          } catch (...) {
+            vips_area_unref(reinterpret_cast<VipsArea*>(blob));
+            throw;
+          }
           vips_area_unref(reinterpret_cast<VipsArea*>(blob));
         } else {
           // Reload JPEG file
@@ -258,7 +287,12 @@ class PipelineWorker : public Napi::AsyncWorker {
           if (baton->input->buffer != nullptr) {
             // Reload WebP buffer
             VipsBlob *blob = vips_blob_new(nullptr, baton->input->buffer, baton->input->bufferLength);
-            image = VImage::webpload_buffer(blob, option);
+            try {
+              image = VImage::webpload_buffer(blob, option);
+            } catch (...) {
+              vips_area_unref(reinterpret_cast<VipsArea*>(blob));
+              throw;
+            }
             vips_area_unref(reinterpret_cast<VipsArea*>(blob));
           } else {
             // Reload WebP file
@@ -268,7 +302,12 @@ class PipelineWorker : public Napi::AsyncWorker {
           if (baton->input->buffer != nullptr) {
             // Reload SVG buffer
             VipsBlob *blob = vips_blob_new(nullptr, baton->input->buffer, baton->input->bufferLength);
-            image = VImage::svgload_buffer(blob, option);
+            try {
+              image = VImage::svgload_buffer(blob, option);
+            } catch (...) {
+              vips_area_unref(reinterpret_cast<VipsArea*>(blob));
+              throw;
+            }
             vips_area_unref(reinterpret_cast<VipsArea*>(blob));
           } else {
             // Reload SVG file
@@ -282,7 +321,12 @@ class PipelineWorker : public Napi::AsyncWorker {
           if (baton->input->buffer != nullptr) {
             // Reload PDF buffer
             VipsBlob *blob = vips_blob_new(nullptr, baton->input->buffer, baton->input->bufferLength);
-            image = VImage::pdfload_buffer(blob, option);
+            try {
+              image = VImage::pdfload_buffer(blob, option);
+            } catch (...) {
+              vips_area_unref(reinterpret_cast<VipsArea*>(blob));
+              throw;
+            }
             vips_area_unref(reinterpret_cast<VipsArea*>(blob));
           } else {
             // Reload PDF file
@@ -302,9 +346,23 @@ class PipelineWorker : public Napi::AsyncWorker {
       int gainMapScaleFactor = 1;
       if (sharp::HasGainMap(image)) {
         if (baton->keepGainMap) {
-          gainMap = image.gainmap();
+          gainMap = image.gainmap().copy_memory();
           if (image.get_typeof("gainmap-scale-factor") == G_TYPE_INT) {
             gainMapScaleFactor = image.get_int("gainmap-scale-factor");
+          }
+          if (gainMapFlip) {
+            gainMap = gainMap.flip(VIPS_DIRECTION_VERTICAL);
+          }
+          if (gainMapFlop) {
+            gainMap = gainMap.flip(VIPS_DIRECTION_HORIZONTAL);
+          }
+          if (gainMapRotation != VIPS_ANGLE_D0) {
+            gainMap = gainMap.rot(gainMapRotation);
+          }
+          if (baton->topOffsetPre != -1) {
+            gainMap = gainMap.extract_area(
+              baton->leftOffsetPre / gainMapScaleFactor, baton->topOffsetPre / gainMapScaleFactor,
+              baton->widthPre / gainMapScaleFactor, baton->heightPre / gainMapScaleFactor);
           }
         } else if (baton->withGainMap) {
           image = image.uhdr2scRGB();
@@ -341,13 +399,13 @@ class PipelineWorker : public Napi::AsyncWorker {
       }
 
       // Ensure we're using a device-independent colour space
-      std::pair<char*, size_t> inputProfile(nullptr, 0);
       if ((baton->keepMetadata & VIPS_FOREIGN_KEEP_ICC) && baton->withIccProfile.empty()) {
         // Cache input profile for use with output
         inputProfile = sharp::GetProfile(image);
         baton->input->ignoreIcc = true;
       }
       char const *processingProfile = image.interpretation() == VIPS_INTERPRETATION_RGB16 ? "p3" : "srgb";
+      bool importedToPcs = false;
       if (
         sharp::HasProfile(image) &&
         image.interpretation() != VIPS_INTERPRETATION_LABS &&
@@ -357,10 +415,20 @@ class PipelineWorker : public Napi::AsyncWorker {
       ) {
         // Convert to sRGB/P3 using embedded profile
         try {
-          image = image.icc_transform(processingProfile, VImage::option()
-            ->set("embedded", true)
-            ->set("depth", sharp::Is16Bit(image.interpretation()) ? 16 : 8)
-            ->set("intent", VIPS_INTENT_PERCEPTUAL));
+          if (deferColourspace &&
+            (image.format() == VIPS_FORMAT_UCHAR || image.format() == VIPS_FORMAT_USHORT)) {
+            // XYZ PCS is linear and device-independent, so colour management and linearisation are a single operation
+            image = image.icc_import(VImage::option()
+              ->set("embedded", true)
+              ->set("pcs", labPcs ? VIPS_PCS_LAB : VIPS_PCS_XYZ)
+              ->set("intent", VIPS_INTENT_PERCEPTUAL));
+            importedToPcs = true;
+          } else {
+            image = image.icc_transform(processingProfile, VImage::option()
+              ->set("embedded", true)
+              ->set("depth", sharp::Is16Bit(image.interpretation()) ? 16 : 8)
+              ->set("intent", VIPS_INTENT_PERCEPTUAL));
+          }
         } catch(...) {
           sharp::VipsWarningCallback(nullptr, G_LOG_LEVEL_WARNING, "Invalid embedded profile", nullptr);
         }
@@ -371,6 +439,10 @@ class PipelineWorker : public Napi::AsyncWorker {
         image = image.icc_transform(processingProfile, VImage::option()
           ->set("input_profile", "cmyk")
           ->set("intent", VIPS_INTENT_PERCEPTUAL));
+      }
+
+      if (deferColourspace) {
+        image = sharp::EnsureColourspace(image, baton->colourspacePipeline);
       }
 
       // Flatten image to remove alpha channel
@@ -557,6 +629,7 @@ class PipelineWorker : public Napi::AsyncWorker {
       // Rotate post-extract non-90 angle
       if (!baton->rotateBefore && baton->rotationAngle != 0.0) {
         MultiPageUnsupported(nPages, "Rotate");
+        KeepGainMapUnsupported(baton->keepGainMap, "Rotate");
         image = sharp::StaySequential(image);
         std::vector<double> background;
         std::tie(image, background) = sharp::ApplyAlpha(image, baton->rotationBackground, shouldPremultiplyAlpha);
@@ -613,15 +686,17 @@ class PipelineWorker : public Napi::AsyncWorker {
           std::tie(image, background) = sharp::ApplyAlpha(image, baton->extendBackground, shouldPremultiplyAlpha);
         }
         image = sharp::StaySequential(image, nPages > 1 || baton->extendWith != VIPS_EXTEND_BACKGROUND);
-        auto options = VImage::option()->set("extend", baton->extendWith);
-        if (baton->extendWith == VIPS_EXTEND_BACKGROUND) {
-          options->set("background", background);
+        if (nPages > 1) {
+          image = sharp::EmbedMultiPage(image,
+            baton->extendLeft, baton->extendTop, baton->width, baton->height,
+            baton->extendWith, background, nPages, &targetPageHeight);
+        } else {
+          auto options = VImage::option()->set("extend", baton->extendWith);
+          if (baton->extendWith == VIPS_EXTEND_BACKGROUND) {
+            options->set("background", background);
+          }
+          image = image.embed(baton->extendLeft, baton->extendTop, baton->width, baton->height, options);
         }
-        image = nPages > 1
-          ? sharp::EmbedMultiPage(image,
-              baton->extendLeft, baton->extendTop, baton->width, baton->height,
-              baton->extendWith, background, nPages, &targetPageHeight)
-          : image.embed(baton->extendLeft, baton->extendTop, baton->width, baton->height, options);
         if (baton->keepGainMap) {
           gainMap = gainMap.embed(baton->extendLeft / gainMapScaleFactor, baton->extendTop / gainMapScaleFactor,
             baton->width / gainMapScaleFactor, baton->height / gainMapScaleFactor, VImage::option()
@@ -855,6 +930,19 @@ class PipelineWorker : public Napi::AsyncWorker {
         image = sharp::EnsureAlpha(image, baton->ensureAlpha);
       }
 
+      // Leave PCS before the output colourspace is applied, which would gamut-clip
+      if (importedToPcs) {
+        try {
+          image = image.colourspace(VIPS_INTERPRETATION_XYZ).icc_export(VImage::option()
+            ->set("output_profile", baton->withIccProfile.empty()
+              ? processingProfile
+              : const_cast<char*>(baton->withIccProfile.data()))
+            ->set("intent", VIPS_INTENT_PERCEPTUAL));
+        } catch(...) {
+          sharp::VipsWarningCallback(nullptr, G_LOG_LEVEL_WARNING, "Invalid profile", nullptr);
+        }
+      }
+
       // Ensure output colour space
       if (sharp::Is16Bit(image.interpretation())) {
         image = image.cast(VIPS_FORMAT_USHORT);
@@ -863,6 +951,7 @@ class PipelineWorker : public Napi::AsyncWorker {
         image = image.colourspace(baton->colourspace, VImage::option()->set("source_space", image.interpretation()));
         if (inputProfile.first != nullptr && baton->withIccProfile.empty()) {
           image = sharp::SetProfile(image, inputProfile);
+          inputProfile.first = nullptr;
         }
       }
 
@@ -873,10 +962,9 @@ class PipelineWorker : public Napi::AsyncWorker {
           if (baton->extractChannel == 3 && image.has_alpha()) {
             baton->extractChannel = image.bands() - 1;
           } else {
-            (baton->err)
-              .append("Cannot extract channel ").append(std::to_string(baton->extractChannel))
-              .append(" from image with channels 0-").append(std::to_string(image.bands() - 1));
-            return Error();
+            throw std::runtime_error(
+              std::string("Cannot extract channel ").append(std::to_string(baton->extractChannel))
+              .append(" from image with channels 0-").append(std::to_string(image.bands() - 1)));
           }
         }
         VipsInterpretation colourspace = sharp::Is16Bit(image.interpretation())
@@ -888,7 +976,7 @@ class PipelineWorker : public Napi::AsyncWorker {
       }
 
       // Apply output ICC profile
-      if (!baton->withIccProfile.empty()) {
+      if (!importedToPcs && !baton->withIccProfile.empty()) {
         try {
           image = image.icc_transform(const_cast<char*>(baton->withIccProfile.data()), VImage::option()
             ->set("input_profile", processingProfile)
@@ -1133,7 +1221,6 @@ class PipelineWorker : public Napi::AsyncWorker {
         } else if (baton->formatOut == "jxl" ||
           (baton->formatOut == "input" && inputImageType == sharp::ImageType::JXL)) {
           // Write JXL to buffer
-          image = sharp::RemoveAnimationProperties(image);
           VipsArea *area = reinterpret_cast<VipsArea*>(image.jxlsave_buffer(VImage::option()
             ->set("keep", baton->keepMetadata)
             ->set("distance", baton->jxlDistance)
@@ -1325,7 +1412,6 @@ class PipelineWorker : public Napi::AsyncWorker {
         } else if (baton->formatOut == "jxl" || (mightMatchInput && isJxl) ||
           (willMatchInput && inputImageType == sharp::ImageType::JXL)) {
           // Write JXL to file
-          image = sharp::RemoveAnimationProperties(image);
           image.jxlsave(const_cast<char*>(baton->fileOut.data()), VImage::option()
             ->set("keep", baton->keepMetadata)
             ->set("distance", baton->jxlDistance)
@@ -1356,8 +1442,7 @@ class PipelineWorker : public Napi::AsyncWorker {
           baton->formatOut = "v";
         } else {
           // Unsupported output format
-          (baton->err).append("Unsupported output format " + baton->fileOut);
-          return Error();
+          throw std::runtime_error("Unsupported output format " + baton->fileOut);
         }
       }
     } catch (std::runtime_error const &err) {
@@ -1373,6 +1458,8 @@ class PipelineWorker : public Napi::AsyncWorker {
         }
       }
     }
+    g_free(inputProfile.first);
+
     // Clean up libvips' per-request data and threads
     vips_error_clear();
     vips_thread_shutdown();
@@ -1440,7 +1527,7 @@ class PipelineWorker : public Napi::AsyncWorker {
           // ECMAScript ArrayBuffer with Uint8Array view
           Napi::TypedArrayOf<uint8_t> data = Napi::Buffer<char>::Copy(env,
             static_cast<char*>(baton->bufferOut), baton->bufferOutLength);
-          sharp::FreeCallback(static_cast<char*>(baton->bufferOut), nullptr);
+          sharp::FreeCallback(nullptr, static_cast<char*>(baton->bufferOut));
           Callback().SHARP_CALLBACK_FN_NAME(Receiver().Value(), { env.Null(), data, info });
         } else {
           // Node.js Buffer
@@ -1632,6 +1719,8 @@ class PipelineWorker : public Napi::AsyncWorker {
     image = image.copy();
     image.set("gainmap-data", reinterpret_cast<VipsCallbackFn>(vips_area_free_cb),
       gainMapJpeg->data, gainMapJpeg->length);
+    gainMapJpeg->free_fn = nullptr;
+    vips_area_unref(gainMapJpeg);
     return image;
   }
 
@@ -1796,9 +1885,9 @@ Napi::Value pipeline(const Napi::CallbackInfo& info) {
     baton->convKernelOffset = sharp::AttrAsDouble(kernel, "offset");
     size_t const kernelSize = static_cast<size_t>(baton->convKernelWidth * baton->convKernelHeight);
     baton->convKernel.resize(kernelSize);
-    Napi::Array kdata = kernel.Get("kernel").As<Napi::Array>();
+    Napi::Array kernelData = kernel.Get("kernel").As<Napi::Array>();
     for (unsigned int i = 0; i < kernelSize; i++) {
-      baton->convKernel[i] = sharp::AttrAsDouble(kdata, i);
+      baton->convKernel[i] = sharp::AttrAsDouble(kernelData, i);
     }
   }
   if (options.Has("recombMatrix")) {

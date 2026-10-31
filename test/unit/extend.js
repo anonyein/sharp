@@ -1,5 +1,5 @@
 /*!
-  Copyright 2013 Lovell Fuller and others.
+  SPDX-FileCopyrightText: 2013 Lovell Fuller and others
   SPDX-License-Identifier: Apache-2.0
 */
 
@@ -153,6 +153,13 @@ suite('Extend', () => {
     t.assert.throws(
       () => sharp().extend(-1),
       /Expected integer between 1 and 100000000 for extend but received -1 of type number/
+    );
+  });
+  test('null fails', (t) => {
+    t.plan(1);
+    t.assert.throws(
+      () => sharp().extend(null),
+      /Expected integer or object for extend but received null of type object/
     );
   });
   test('too large fails', (t) => {

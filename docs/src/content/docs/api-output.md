@@ -158,7 +158,7 @@ Set output density (DPI) in EXIF metadata.
 
 | Param | Type | Description |
 | --- | --- | --- |
-| density | <code>number</code> | Number of pixels per inch (DPI). |
+| density | <code>number</code> | Number of pixels per inch (DPI), between 1 and 100000. |
 
 **Example**  
 ```js
@@ -435,7 +435,7 @@ Allows orientation and density to be set or updated.
 | --- | --- | --- |
 | [options] | <code>Object</code> |  |
 | [options.orientation] | <code>number</code> | Used to update the EXIF `Orientation` tag, integer between 1 and 8. |
-| [options.density] | <code>number</code> | Number of pixels per inch (DPI). |
+| [options.density] | <code>number</code> | Number of pixels per inch (DPI), between 1 and 100000. |
 
 **Example**  
 ```js
@@ -839,7 +839,7 @@ globally-installed libvips compiled with support for libheif, libde265 and x265.
 | [options.effort] | <code>number</code> | <code>4</code> | CPU effort, between 0 (fastest) and 9 (slowest) |
 | [options.chromaSubsampling] | <code>string</code> | <code>&quot;&#x27;4:4:4&#x27;&quot;</code> | set to '4:2:0' to use chroma subsampling |
 | [options.bitdepth] | <code>number</code> | <code>8</code> | set bitdepth to 8, 10 or 12 bit |
-| [options.tune] | <code>string</code> | <code>&quot;&#x27;auto&#x27;&quot;</code> | tune output for a quality metric, one of 'auto' (default), 'iq', 'psnr' or 'ssim' |
+| [options.tune] | <code>string</code> | <code>&quot;&#x27;auto&#x27;&quot;</code> | tune output for a quality metric, one of 'auto' (av1 default), 'iq' (av1 only), 'psnr' or 'ssim' (hevc default) |
 
 **Example**  
 ```js

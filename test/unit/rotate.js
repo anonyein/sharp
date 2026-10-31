@@ -1,5 +1,5 @@
 /*!
-  Copyright 2013 Lovell Fuller and others.
+  SPDX-FileCopyrightText: 2013 Lovell Fuller and others
   SPDX-License-Identifier: Apache-2.0
 */
 
@@ -176,6 +176,17 @@ suite('Rotation', () => {
 
   [-3690, -450, -90, 90, 450, 3690].forEach((angle) => {
     test(`Rotate by any 90-multiple angle (${angle}deg)`, async (t) => {
+      t.plan(2);
+      const { info } = await bufferWithInfo(sharp(fixtures.inputJpg320x240).rotate(angle));
+      t.assert.strictEqual(240, info.width);
+      t.assert.strictEqual(320, info.height);
+    });
+  });
+
+  // A 90-multiple angle larger than the 32-bit integer range is normalised
+  // modulo 360 rather than silently truncated when read natively
+  [90 * 47721859, 90 * 47721861, -90 * 47721859].forEach((angle) => {
+    test(`Rotate by a 90-multiple angle beyond 32-bit range (${angle}deg)`, async (t) => {
       t.plan(2);
       const { info } = await bufferWithInfo(sharp(fixtures.inputJpg320x240).rotate(angle));
       t.assert.strictEqual(240, info.width);

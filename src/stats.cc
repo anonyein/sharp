@@ -1,5 +1,5 @@
 /*!
-  Copyright 2013 Lovell Fuller and others.
+  SPDX-FileCopyrightText: 2013 Lovell Fuller and others
   SPDX-License-Identifier: Apache-2.0
 */
 
@@ -60,7 +60,7 @@ class StatsWorker : public Napi::AsyncWorker {
             static_cast<int>(stats.getpoint(STAT_MAXY_INDEX, b).front()));
           baton->channelStats.push_back(cStats);
         }
-        // Image is not opaque when alpha layer is present and contains a non-mamixa value
+        // Image is not opaque when alpha layer is present and contains a non-maxima value
         if (image.has_alpha()) {
           double const minAlpha = static_cast<double>(stats.getpoint(STAT_MIN_INDEX, bands).front());
           if (minAlpha != vips_interpretation_max_alpha(image.interpretation())) {

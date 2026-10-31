@@ -1,5 +1,5 @@
 /*!
-  Copyright 2013 Lovell Fuller and others.
+  SPDX-FileCopyrightText: 2013 Lovell Fuller and others
   SPDX-License-Identifier: Apache-2.0
 */
 
@@ -369,6 +369,13 @@ suite('composite', () => {
       t.assert.throws(() => {
         sharp().composite(['invalid']);
       }, /Expected object for image to composite but received invalid of type string/);
+    });
+
+    test('null image', (t) => {
+      t.plan(1);
+      t.assert.throws(() => {
+        sharp().composite([null]);
+      }, /Expected object for image to composite but received null of type object/);
     });
 
     test('missing input', (t) => {
