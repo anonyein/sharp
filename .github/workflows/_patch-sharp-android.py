@@ -9,9 +9,8 @@ sharp is a Node-API addon that consumes libvips' C++ API. For Android we:
   * neutralise the Linux-only `_GLIBCXX_USE_CXX11_ABI` probe, which shells out
     to `readelf` on a host-native libvips-cpp.so and is meaningless for an NDK
     libc++ cross build;
-  * add an `OS == "linux"` link block (gyp's OS is "linux" when cross-compiling
-    on a Linux host) that links the Javet Node runtime .so to resolve napi_*
-    at link time, alongside libvips-cpp;
+  * link the Javet Node runtime .so in the global-libvips branch to resolve
+    napi_* at link time, alongside libvips-cpp;
   * raise sharp's own `-std=c++0x` (i.e. C++11) to C++17. sharp's target-level
     cflags_cc are appended *after* node's common.gypi `-std=gnu++20`, and the
     last -std on the command line wins, so upstream effectively pins the addon
@@ -81,28 +80,17 @@ if n_std == 0:
         sys.exit("could not find sharp's -std=c++0x to raise to C++17")
     print("sharp already targets C++14 or newer; leaving -std alone")
 
-# 2) Inject the Javet Node runtime .so into the link libraries so napi_*
-#    symbols resolve at link time (verified via --no-undefined). We keep the
-#    existing libvips-cpp link entry and append the Javet .so by absolute path.
-#
-#    Anchor on the global-libvips linux link libraries entry.
-anchor = "'-l:libvips-cpp.so.42'"
-if anchor not in src:
-    # Some versions use .so without version; try a looser anchor.
-    m = re.search(r"'-l:libvips-cpp\.so(\.\d+)?'", src)
-    if not m:
-        sys.exit("could not find libvips-cpp link entry to anchor Android patch")
-    anchor = m.group(0)
-
-javet_lib = os.environ.get("IV_JAVET_LIB", "").strip()
-# The link entry becomes: keep libvips-cpp, add the Javet .so by absolute path.
-# gyp reads $(IV_JAVET_LIB) from the environment at configure time.
-new_libs = (
-    "'-l:libvips-cpp.so.42',\n"
-    "                # SHARP_ANDROID_PATCH: resolve napi_* against the Javet Node runtime .so\n"
-    "                '<!(echo $IV_JAVET_LIB)'"
+# 2) Keep the pkg-config library flags and append Javet in the same branch.
+src, n_link = re.subn(
+    r"^([ \t]*)'libraries': \[('<!@\([^\n]*pkg-config --libs vips-cpp\)')\],$",
+    r"\1# SHARP_ANDROID_PATCH: resolve napi_* against the Javet runtime\n"
+    r"""\1'libraries': [\2, '<!(echo "$IV_JAVET_LIB")'],""" "\n"
+    r"\1'ldflags': ['-Wl,--no-undefined'],",
+    src,
+    flags=re.MULTILINE,
 )
-src = src.replace(anchor, new_libs, 1)
+if n_link != 1:
+    sys.exit("expected one global libvips-cpp pkg-config link entry")
 
 # 3) No rpath needed on Android. Android's dynamic linker resolves DT_NEEDED
 #    dependencies from the app's nativeLibraryDir (the unpacked jniLibs/<abi>/),
@@ -115,5 +103,5 @@ with open(GYP, "w", encoding="utf-8") as f:
 
 print(
     f"patched sharp binding.gyp (probe replaced: {n_probe}, "
-    f"-std raised to c++17: {n_std}); linked Javet: {javet_lib}"
+    f"-std raised to c++17: {n_std}, Javet link entry added: {n_link})"
 )
