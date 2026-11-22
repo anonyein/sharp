@@ -313,7 +313,6 @@ class PipelineWorker : public Napi::AsyncWorker {
             // Reload SVG file
             image = VImage::svgload(const_cast<char*>(baton->input->file.data()), option);
           }
-          sharp::SetDensity(image, baton->input->density);
           if (image.width() > 32767 || image.height() > 32767) {
             throw std::runtime_error("Input SVG image will exceed 32767x32767 pixel limit when scaled");
           }
@@ -332,7 +331,6 @@ class PipelineWorker : public Napi::AsyncWorker {
             // Reload PDF file
             image = VImage::pdfload(const_cast<char*>(baton->input->file.data()), option);
           }
-          sharp::SetDensity(image, baton->input->density);
         }
       } else {
         if (inputImageType == sharp::ImageType::SVG && (image.width() > 32767 || image.height() > 32767)) {
@@ -344,7 +342,7 @@ class PipelineWorker : public Napi::AsyncWorker {
       }
       VImage gainMap;
       int gainMapScaleFactor = 1;
-      if (sharp::HasGainMap(image)) {
+      if (!image.gainmap().is_null()) {
         if (baton->keepGainMap) {
           gainMap = image.gainmap().copy_memory();
           if (image.get_typeof("gainmap-scale-factor") == G_TYPE_INT) {
@@ -367,7 +365,9 @@ class PipelineWorker : public Napi::AsyncWorker {
         } else if (baton->withGainMap) {
           image = image.uhdr2scRGB();
         }
-        image = sharp::RemoveGainMap(image);
+        image = image.copy();
+        image.remove("gainmap");
+        image.remove("gainmap-data");
       } else {
         baton->keepGainMap = false;
         baton->withGainMap = false;
@@ -394,6 +394,9 @@ class PipelineWorker : public Napi::AsyncWorker {
       // In toilet-roll mode, we must adjust vshrink so that we exactly hit
       // pageHeight or we'll have pixels straddling pixel boundaries
       if (inputHeight > pageHeight) {
+        if (nPages == 0 || targetHeight > INT_MAX / nPages) {
+          throw std::runtime_error("Invalid dimensions");
+        }
         targetHeight *= nPages;
         vshrink = static_cast<double>(inputHeight) / targetHeight;
       }
@@ -406,6 +409,7 @@ class PipelineWorker : public Napi::AsyncWorker {
       }
       char const *processingProfile = image.interpretation() == VIPS_INTERPRETATION_RGB16 ? "p3" : "srgb";
       bool importedToPcs = false;
+      bool importedToP3 = false;
       if (
         sharp::HasProfile(image) &&
         image.interpretation() != VIPS_INTERPRETATION_LABS &&
@@ -428,6 +432,7 @@ class PipelineWorker : public Napi::AsyncWorker {
               ->set("embedded", true)
               ->set("depth", sharp::Is16Bit(image.interpretation()) ? 16 : 8)
               ->set("intent", VIPS_INTENT_PERCEPTUAL));
+            importedToP3 = image.interpretation() == VIPS_INTERPRETATION_RGB16;
           }
         } catch(...) {
           sharp::VipsWarningCallback(nullptr, G_LOG_LEVEL_WARNING, "Invalid embedded profile", nullptr);
@@ -935,7 +940,7 @@ class PipelineWorker : public Napi::AsyncWorker {
         try {
           image = image.colourspace(VIPS_INTERPRETATION_XYZ).icc_export(VImage::option()
             ->set("output_profile", baton->withIccProfile.empty()
-              ? processingProfile
+              ? (sharp::Is16Bit(baton->colourspace) ? processingProfile : "srgb")
               : const_cast<char*>(baton->withIccProfile.data()))
             ->set("intent", VIPS_INTENT_PERCEPTUAL));
         } catch(...) {
@@ -946,6 +951,11 @@ class PipelineWorker : public Napi::AsyncWorker {
       // Ensure output colour space
       if (sharp::Is16Bit(image.interpretation())) {
         image = image.cast(VIPS_FORMAT_USHORT);
+      }
+      if (importedToP3 && !sharp::Is16Bit(baton->colourspace) && baton->withIccProfile.empty()) {
+        image = image.icc_transform("srgb", VImage::option()
+          ->set("input_profile", "p3")
+          ->set("intent", VIPS_INTENT_PERCEPTUAL));
       }
       if (image.interpretation() != baton->colourspace) {
         image = image.colourspace(baton->colourspace, VImage::option()->set("source_space", image.interpretation()));
@@ -1078,6 +1088,7 @@ class PipelineWorker : public Napi::AsyncWorker {
           // Write JP2 to Buffer
           sharp::AssertImageTypeDimensions(image, sharp::ImageType::JP2);
           VipsArea *area = reinterpret_cast<VipsArea*>(image.jp2ksave_buffer(VImage::option()
+            ->set("keep", baton->keepMetadata)
             ->set("Q", baton->jp2Quality)
             ->set("lossless", baton->jp2Lossless)
             ->set("subsample_mode", baton->jp2ChromaSubsampling == "4:4:4"
@@ -1276,7 +1287,7 @@ class PipelineWorker : public Napi::AsyncWorker {
         bool const isV = sharp::IsV(baton->fileOut);
         bool const mightMatchInput = baton->formatOut == "input";
         bool const willMatchInput = mightMatchInput &&
-         !(isJpeg || isPng || isWebp || isGif || isTiff || isJp2 || isHeif || isDz || isDzZip || isV);
+         !(isJpeg || isPng || isWebp || isGif || isTiff || isJp2 || isJxl || isHeif || isDz || isDzZip || isV);
 
         if (baton->formatOut == "jpeg" || (mightMatchInput && isJpeg) ||
           (willMatchInput && inputImageType == sharp::ImageType::JPEG)) {
@@ -1303,13 +1314,18 @@ class PipelineWorker : public Napi::AsyncWorker {
               ->set("optimize_coding", baton->jpegOptimiseCoding));
           }
           baton->formatOut = "jpeg";
-          baton->channels = std::min(baton->channels, 3);
+          if (baton->colourspace == VIPS_INTERPRETATION_CMYK) {
+            baton->channels = std::min(baton->channels, 4);
+          } else {
+            baton->channels = std::min(baton->channels, 3);
+          }
           baton->hasAlphaOut = false;
         } else if (baton->formatOut == "jp2" || (mightMatchInput && isJp2) ||
           (willMatchInput && (inputImageType == sharp::ImageType::JP2))) {
           // Write JP2 to file
           sharp::AssertImageTypeDimensions(image, sharp::ImageType::JP2);
           image.jp2ksave(const_cast<char*>(baton->fileOut.data()), VImage::option()
+            ->set("keep", baton->keepMetadata)
             ->set("Q", baton->jp2Quality)
             ->set("lossless", baton->jp2Lossless)
             ->set("subsample_mode", baton->jp2ChromaSubsampling == "4:4:4"

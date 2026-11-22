@@ -496,10 +496,10 @@ Use these JPEG options for output image.
 | [options.chromaSubsampling] | <code>string</code> | <code>&quot;&#x27;4:2:0&#x27;&quot;</code> | set to '4:4:4' to prevent chroma subsampling otherwise defaults to '4:2:0' chroma subsampling |
 | [options.optimiseCoding] | <code>boolean</code> | <code>true</code> | optimise Huffman coding tables |
 | [options.optimizeCoding] | <code>boolean</code> | <code>true</code> | alternative spelling of optimiseCoding |
-| [options.mozjpeg] | <code>boolean</code> | <code>false</code> | use mozjpeg defaults, equivalent to `{ trellisQuantisation: true, overshootDeringing: true, optimiseScans: true, quantisationTable: 3 }` |
-| [options.trellisQuantisation] | <code>boolean</code> | <code>false</code> | apply trellis quantisation |
+| [options.mozjpeg] | <code>boolean</code> | <code>false</code> | use mozjpeg defaults, equivalent to `{ trellisQuantisation: true, overshootDeringing: true, optimiseScans: true, progressive: true, quantisationTable: 3 }` (may increase processing time by about 75%) |
+| [options.trellisQuantisation] | <code>boolean</code> | <code>false</code> | apply trellis quantisation (may increase processing time by about 45%) |
 | [options.overshootDeringing] | <code>boolean</code> | <code>false</code> | apply overshoot deringing |
-| [options.optimiseScans] | <code>boolean</code> | <code>false</code> | optimise progressive scans, forces progressive |
+| [options.optimiseScans] | <code>boolean</code> | <code>false</code> | optimise progressive scans, forces progressive (may increase processing time by about 40%) |
 | [options.optimizeScans] | <code>boolean</code> | <code>false</code> | alternative spelling of optimiseScans |
 | [options.quantisationTable] | <code>number</code> | <code>0</code> | quantization table to use, integer 0-8 |
 | [options.quantizationTable] | <code>number</code> | <code>0</code> | alternative spelling of quantisationTable |
@@ -529,12 +529,12 @@ const data = await sharp(input)
 
 Use these PNG options for output image.
 
-By default, PNG output is full colour at 8 bits per pixel.
+By default, PNG output is full colour at 8 bits per channel.
 
-Indexed PNG input at 1, 2 or 4 bits per pixel is converted to 8 bits per pixel.
+Indexed PNG input is converted to 8 bits per channel.
 Set `palette` to `true` for slower, indexed PNG output.
 
-For 16 bits per pixel output, convert to `rgb16` via
+For 16 bits per channel output, convert to `rgb16` via
 [toColourspace](/api-colour/#tocolourspace).
 
 
@@ -573,7 +573,7 @@ const data = await sharp(input)
 ```
 **Example**  
 ```js
-// Output 16 bits per pixel RGB(A)
+// Output 16 bits per channel RGB(A)
 const data = await sharp(input)
  .toColourspace('rgb16')
  .png()
